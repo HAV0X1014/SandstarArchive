@@ -5,6 +5,7 @@ import katworks.discord.SendStatusMessage;
 import katworks.impl.TwitterAccount;
 import katworks.twitter.TwitterScraper;
 
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -30,10 +31,15 @@ public class ScrapeService {
      */
     private void runGlobalScrape() {
         List<TwitterAccount> accountList = DatabaseHandler.getActiveAccounts();
+        System.out.println("Scrape initiated at: " + new Date());
+        if (config.discordEnabled) SendStatusMessage.sendMessage("Scrape initiated.");
+        StringBuilder discordStatusUpdate = new StringBuilder();
+        discordStatusUpdate.append("Accounts checked:\n");
         for (TwitterAccount account : accountList) {
             try {
                 System.out.println("Checking " + account.screenName + ".");
                 TwitterScraper.scrapeByAccount(account);
+                discordStatusUpdate.append(account.screenName).append("\n");
             } catch (InterruptedException e) {
                 if (config.discordEnabled) SendStatusMessage.sendMessage("Failed to complete scrape for: " + account.screenName + "!");
                 System.out.println("Failed to complete scrape for: " + account.screenName + "!");
@@ -42,6 +48,7 @@ public class ScrapeService {
         }
         //if (config.discordEnabled) SendStatusMessage.sendMessage("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
         System.out.println("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
+        SendStatusMessage.sendMessage(discordStatusUpdate.toString());
     }
 
     /**

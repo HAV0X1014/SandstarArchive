@@ -26,6 +26,10 @@ public class Config {
     public String accountsChannel; //the channel ID for account threads
     public String allowedUsersRoleID; //the ID of the role that allows users to make changes.
 
+    public boolean webEnabled; //if the website/API should be enabled
+    public int port; //the port the web server should serve on
+    public String key; //the private key/password users need to enter to edit posts
+
     /**
      * Creates a config with defaults for the user to edit and set as they want.
      */
@@ -48,12 +52,18 @@ public class Config {
         discordConfig.put("RawChannelFeed","ID for your #raw-feed channel. This is where all posts go, for now.");
         discordConfig.put("ChannelsForSafetyRatings", new JSONArray().put("ID for your #safe channel.").put("ID for your #nsfw channel.").put("ID for your #NSFL channel."));
         discordConfig.put("RejectedChannel","ID for your #rejected channel. By the way, the channels in ChannelsForSafetyRatings need to correspond to the number and position of the ratings you put in SafetyRatings.");
-        discordConfig.put("AccountsChannel","ID for your accounts channel for threads to be made in");
+        discordConfig.put("AccountsChannel","ID for your accounts channel for threads to be made in.");
         discordConfig.put("AllowedUsersRoleID","Role ID for the role that allows users to mark posts.");
+
+        JSONObject webConfig = new JSONObject();
+        webConfig.put("Enabled",true);
+        webConfig.put("Port",7070);
+        webConfig.put("Key","a secret key that allows editing posts on the site.");
 
         configRoot.put("Archive",archiveConfig);
         configRoot.put("Database",databaseConfig);
         configRoot.put("Discord",discordConfig);
+        configRoot.put("Web",webConfig);
 
         WriteFile.write("config.json",configRoot.toString(1));
     }
@@ -68,7 +78,8 @@ public class Config {
         JSONObject archiveConfig = configRoot.getJSONObject("Archive");
         JSONObject databaseConfig = configRoot.getJSONObject("Database");
         JSONObject discordConfig = configRoot.getJSONObject("Discord");
-
+        JSONObject webConfig = configRoot.getJSONObject("Web");
+        //archive-wide config
         for (int c = 0; c < archiveConfig.getJSONArray("ContentRatings").length(); c++) {
             config.contentRatings.add(archiveConfig.getJSONArray("ContentRatings").getString(c));
         }
@@ -77,12 +88,11 @@ public class Config {
         }
         config.contentRatings.add("Waiting"); //Waiting is a special rating that is used in case no rating has been assigned yet. It is basically "null."
         config.safetyRatings.add("Waiting");
-
         config.checkIntervalHours = archiveConfig.getInt("CheckIntervalHours");
-
+        //database config
         config.databasePath = databaseConfig.getString("DatabasePath");
         config.imageDownloadPath = databaseConfig.getString("ImageDownloadPath");
-
+        //discord config
         config.discordEnabled = discordConfig.getBoolean("Enabled");
         config.botToken = discordConfig.getString("BotToken");
         config.serverID = discordConfig.getString("ServerID");
@@ -94,6 +104,10 @@ public class Config {
         config.statusChannel = discordConfig.getString("StatusChannel");
         config.accountsChannel = discordConfig.getString("AccountsChannel");
         config.allowedUsersRoleID = discordConfig.getString("AllowedUsersRoleID");
+        //web config
+        config.webEnabled = webConfig.getBoolean("Enabled");
+        config.port = webConfig.getInt("Port");
+        config.key = webConfig.getString("Key");
 
         return config;
     }

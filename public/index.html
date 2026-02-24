@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sandstar Archive</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<nav class="top-bar">
+    <div class="nav-left">
+        <input type="text" id="searchBar" placeholder="Search">
+        <div id="searchResults" class="search-dropdown hidden"></div>
+    </div>
+    <div class="nav-center">
+        <a href="/" class="logo">SANDSTAR ARCHIVE</a>
+    </div>
+    <div class="nav-right">
+        <div style="position: relative; display: inline-block; margin-right: 15px;">
+            <button class="btn" onclick="toggleFilters()" id="filterBtn">Filters</button>
+            <div id="filterDropdown" class="filter-dropdown hidden"></div>
+        </div>
+        <span id="authSection"></span>
+    </div>
+</nav>
+
+<main id="app">
+    <!-- Content dynamically injected here -->
+</main>
+
+<div id="loading" class="hidden">Loading more...</div>
+
+<script src="/app.js"></script>
+</body>
+</html>

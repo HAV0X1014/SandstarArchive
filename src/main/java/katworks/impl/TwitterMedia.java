@@ -1,5 +1,7 @@
 package katworks.impl;
 
+import static katworks.Main.config;
+
 public class TwitterMedia {
     public int id; ///Internally used ID for the media table.
     public String postId; ///Post's ID snowflake from twitter that links back to TwitterPost table.
@@ -38,5 +40,10 @@ public class TwitterMedia {
 
     public TwitterMedia() {
 
+    }
+
+    public String getUrlPath() {
+        // Strip the root archive path and replace with /images
+        return localPath.replace(config.imageDownloadPath, "/images").replace("\\", "/");
     }
 }

@@ -148,7 +148,7 @@ public class SlashCommandHandler extends ListenerAdapter {
                 break;
             }
 
-            case "editartist": {
+            case "editaccount": {
                 String screenName = interaction.getOption("screenname").getAsString();
                 if (interaction.getOption("displayname") != null) {
                     DatabaseHandler.setDisplayName(screenName,interaction.getOption("displayname").getAsString());
@@ -172,6 +172,31 @@ public class SlashCommandHandler extends ListenerAdapter {
             case "deleteaccount": {
                 DatabaseHandler.deleteAccountByScreenName(interaction.getOption("screenname").getAsString());
                 interaction.reply("Account " + interaction.getOption("screenname").getAsString() + " deleted.").queue();
+                break;
+            }
+
+            case "addalias": {
+                interaction.reply(DatabaseHandler.addAlias(
+                        interaction.getOption("artistname").getAsString(),
+                        interaction.getOption("aliasname").getAsString(),
+                        interaction.getOption("safetyrating").getAsString()
+                )).queue();
+                break;
+            }
+
+            case "scrapefrom": {
+                //get account from post ID, then continue to scrape from there on.
+                TwitterPost post = TwitterScraper.scrapePostById(interaction.getOption("postid").getAsString());
+                CompletableFuture.runAsync(() ->{
+                    try {
+                        TwitterAccount account = ensureAccountExists(post);
+
+                        TwitterScraper.scrapeFromPostId(account,interaction.getOption("postid").getAsString());
+                    } catch (Exception e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+                interaction.reply("Scrape continued from " + interaction.getOption("postid").getAsString() + " onward.").queue();
                 break;
             }
         }

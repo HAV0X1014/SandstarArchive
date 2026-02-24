@@ -263,9 +263,110 @@ public class TwitterScraper {
                 Thread.sleep(4570);
             }
         } catch (InterruptedException e) {
-            throw new RuntimeException(e);
+            e.printStackTrace();
         }
         return false; //if the last scraped post ID isnt in this batch.
+    }
+
+    /**
+     * Scrapes a user's media timeline starting from a specific post ID and going backward.
+     * It scans the timeline until it finds the specified startPostId, and then processes
+     * that post and all subsequent (older) posts.
+     *
+     * @param account     The TwitterAccount to scrape.
+     * @param startPostId The post ID to begin scraping from (going backward).
+     * @throws InterruptedException
+     */
+    public static void scrapeFromPostId(TwitterAccount account, String startPostId) throws InterruptedException {
+        boolean stopReached = false;
+        boolean foundStartPost = false;
+
+        try {
+            String cursor = null;
+            boolean notDone = true;
+            do {
+                ConfigUserMedia mediaScrape = new ConfigUserMedia(account.twitterId, cursor);
+                mediaScrape.count = 999;
+                UserMedia userMedia = api.scrap(mediaScrape, CLIENT);
+                String json = JsonUtil.toJson(userMedia);
+                JSONObject mediaJson = new JSONObject(json);
+                JSONArray instructionsArray = mediaJson.getJSONArray("instructions");
+
+                boolean itemsFoundInThisRequest = false;
+                String nextCursor = null;
+
+                for (int i = 0; i < instructionsArray.length(); i++) {
+                    JSONObject instruction = instructionsArray.getJSONObject(i);
+                    String type = instruction.optString("type", "");
+
+                    if (instruction.has("entries")) {
+                        JSONArray entries = instruction.getJSONArray("entries");
+
+                        for (int e = 0; e < entries.length(); e++) {
+                            JSONObject entry = entries.getJSONObject(e);
+
+                            // 1. HANDLE DATA
+                            JSONArray itemsToProcess = null;
+                            if (entry.has("items")) {
+                                itemsToProcess = entry.getJSONArray("items");
+                            } else if (type.equals("TimelineAddToModule")) {
+                                itemsToProcess = new JSONArray().put(entry);
+                            }
+
+                            if (itemsToProcess != null && itemsToProcess.length() > 0) {
+                                itemsFoundInThisRequest = true;
+
+                                if (!foundStartPost) {
+                                    // Look for the startPostId in this chunk
+                                    JSONArray subItems = new JSONArray();
+                                    boolean capturing = false;
+
+                                    for (int j = 0; j < itemsToProcess.length(); j++) {
+                                        JSONObject item = itemsToProcess.getJSONObject(j);
+
+                                        // Once we see the target ID, start adding it and everything after it to be processed
+                                        if (!capturing && item.has("id") && item.getString("id").equals(startPostId)) {
+                                            capturing = true;
+                                            foundStartPost = true;
+                                        }
+
+                                        if (capturing) {
+                                            subItems.put(item);
+                                        }
+                                    }
+
+                                    // Process the subset of items starting from our target post
+                                    if (foundStartPost && subItems.length() > 0) {
+                                        stopReached = processItems(subItems, account);
+                                    }
+                                } else {
+                                    // We've already found the starting point in a previous iteration, process all items normally
+                                    stopReached = processItems(itemsToProcess, account);
+                                }
+
+                                if (stopReached) break;
+                            }
+                            // 2. HANDLE CURSOR
+                            if (entry.has("cursorType") && entry.getString("cursorType").equals("BOTTOM")) {
+                                nextCursor = entry.getString("value");
+                            }
+                        }
+                    }
+                    if (stopReached) break;
+                }
+                if (nextCursor != null) {
+                    cursor = nextCursor;
+                }
+                if (!itemsFoundInThisRequest || stopReached) {
+                    System.out.println(stopReached ? "Reached previously scraped post. Stopping." : "No more items found. Ending scrape.");
+                    break;
+                }
+                System.out.println("Next scrape preparation complete...\n\n");
+                Thread.sleep(3000);
+            } while (notDone);
+        } catch (IOException | URISyntaxException e) {
+            e.printStackTrace();
+        }
     }
 
     /**

@@ -11,18 +11,22 @@ Any database schema changes will make the old database incompatible with new ver
 4. Create or use a Discord bot and server to act as a frontend for the archive.
 5. Once you have configured the account and archive how you desire, re-run the program, and it will create your SQLite database and media archive directories.
 6. Use the Discord frontend to add, remove, edit artists and accounts, and rate posts.
+7. Use the Web frontend to rate posts, view artists and accounts.
 
 ## How to fill account.json
 Go to x.com, inspect element, and go to the 'Network' tab at the top of the inspect element window. Refresh the page, and scroll up to the top of the list of requests that is now frantically filling up the network page. Near the top there should be a `user_flow.json` request. Click this, scroll down to the bottom, and ensure it has `Cookie` on the left and has a long semicolon separated value on the right. I can't give an example, but you'll know it when you see it (it is NOT 'Set-Cookie'.)
 
 Copy the whole value of `Cookie` to the account.json file where it says "cookie". From the same request, copy over the `User-Agent`, `Authorization` and the value  of `X-Csrf-Token` to the account.json file.
 
+## Website/API
+As of now, the web frontend/API is mostly AI coded. I really don't like doing frontend work - JavaScript and web languages are painful. The HTML, CSS, and JavaScript files are in `public/` and can be edited while the program is running! Any API changes will require a recompile and restart of the program, however. As of now it is just a very good example implementation of the functionality the site will need to have. Any rewrites to the web/API will be very well accepted.
+
 ## Notes and known issues
 - You can have up to 5 Content and Safety ratings.
   - This is due to Discord only allowing 5 buttons per row.
 - Discord is not an ideal frontend.
-  - I'm trying to make a website frontend and API so other frontends can interact with the database.
+  - The website frontend should replace Discord's frontend soon. I am not making any "hacks" for Discord that would otherwise hinder development of the web frontend.
 - Edit ratelimits in Discord threads are immensely strict after a post has been up for 1 hour.
-  - Threads were chosen because a server can have up to 1000 active threads and unlimited archived threads. It is unlikely that anyone will hit these limits.
+  - Threads were chosen because a server can have up to 1000 active threads and unlimited archived threads. It is unlikely that anyone will hit these limits, as compared to channel limits.
 - "ChannelsForSafetyRatings" in the config is currently not used, and all posts are sent to "RawFeedChannel"
 - A proper logging setup should be implemented.

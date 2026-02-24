@@ -56,14 +56,16 @@ public class DiscordMain {
                 .addChoice("Active","Active")
                 .addChoice("Deleted","Deleted")
                 .addChoice("Suspended","Suspended");
-        OptionData editAccountSafetyOptions = new OptionData(OptionType.STRING,"safetyrating","The safety rating of the account.",false);
-        OptionData accountSafetyOptions = new OptionData(OptionType.STRING,"accountsafetyrating","The safety rating of the account.",true);
-        OptionData postSafetyOptions = new OptionData(OptionType.STRING,"postsafetyrating","The safety rating of the post.",true);
-        for (String safetyRating : config.safetyRatings) {
-            if (!safetyRating.equals("Waiting")) {
-                editAccountSafetyOptions.addChoice(safetyRating,safetyRating);
-                accountSafetyOptions.addChoice(safetyRating,safetyRating);
-                postSafetyOptions.addChoice(safetyRating,safetyRating);
+        OptionData aliasSafetyOptions = new OptionData(OptionType.STRING,"safetyrating","The safety rating of the alias.",true); //oh
+        OptionData editAccountSafetyOptions = new OptionData(OptionType.STRING,"safetyrating","The safety rating of the account.",false); //my
+        OptionData accountSafetyOptions = new OptionData(OptionType.STRING,"accountsafetyrating","The safety rating of the account.",true); //god
+        OptionData postSafetyOptions = new OptionData(OptionType.STRING,"postsafetyrating","The safety rating of the post.",true); //why
+        for (String safetyRating : config.safetyRatings) { //do
+            if (!safetyRating.equals("Waiting")) { //i
+                aliasSafetyOptions.addChoice(safetyRating,safetyRating); //have
+                editAccountSafetyOptions.addChoice(safetyRating,safetyRating); //to
+                accountSafetyOptions.addChoice(safetyRating,safetyRating); //do
+                postSafetyOptions.addChoice(safetyRating,safetyRating);//this
             }
         }
         cd.add(Commands.slash("addaccount","Track a new account. Requires filling out (some) artist details too.")
@@ -94,6 +96,14 @@ public class DiscordMain {
 
         cd.add(Commands.slash("deleteaccount","Delete account from database.")
                 .addOption(OptionType.STRING,"screenname","The @name of the account.",true));
+
+        cd.add(Commands.slash("addalias","Add an alias to an existing artist.")
+                .addOption(OptionType.STRING,"artistname","Name of the existing artist.",true)
+                .addOption(OptionType.STRING,"aliasname","The name of the alias.",true)
+                .addOptions(aliasSafetyOptions));
+
+        cd.add(Commands.slash("scrapefrom","Scrape an account continuing from the specified post ID.")
+                .addOption(OptionType.STRING,"postid","The post ID to continue from.",true));
 
         //todo: make a "link account to artist" command
         jda.updateCommands().addCommands(cd).queue();

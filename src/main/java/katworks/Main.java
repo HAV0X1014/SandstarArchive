@@ -8,9 +8,11 @@ import katworks.database.DatabaseHandler;
 import katworks.database.WriteQueue;
 import katworks.discord.DiscordMain;
 import katworks.util.Config;
+import katworks.web.WebServer;
 import okhttp3.OkHttpClient;
 
 import java.io.File;
+import java.util.logging.Logger;
 
 public class Main {
     public static TwitterApi api;
@@ -51,6 +53,8 @@ public class Main {
         if (config.discordEnabled) {
             new DiscordMain().start();
         }
+        //this is very much so not ready yet
+        WebServer.start();
 
         writeQueue = new WriteQueue(); //global write queue that prevents any locked database issues
         new ScrapeService().start(); //service that runs scrapes for new content every 3 hours.
