@@ -19,8 +19,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import static katworks.Main.config;
 import static katworks.discord.DiscordMain.allowedRole;
@@ -193,10 +191,18 @@ public class SlashCommandHandler extends ListenerAdapter {
 
                         TwitterScraper.scrapeFromPostId(account,interaction.getOption("postid").getAsString());
                     } catch (Exception e) {
-                        throw new RuntimeException(e);
+                        e.printStackTrace();
                     }
                 });
                 interaction.reply("Scrape continued from " + interaction.getOption("postid").getAsString() + " onward.").queue();
+                break;
+            }
+
+            case "setartistdescription": {
+                String artistName = interaction.getOption("artistname").getAsString();
+                String description = interaction.getOption("description").getAsString();
+                DatabaseHandler.setArtistDescriptionByName(artistName,description);
+                interaction.reply("Description for " + artistName + " updated.").queue();
                 break;
             }
         }

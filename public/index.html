@@ -8,8 +8,9 @@
 </head>
 <body>
 <nav class="top-bar">
-    <div class="nav-left">
+    <div class="nav-left" style="display: flex; gap: 10px; align-items: center; position: relative;">
         <input type="text" id="searchBar" placeholder="Search">
+        <button class="btn" onclick="navigateTo('/artists')">Artists</button>
         <div id="searchResults" class="search-dropdown hidden"></div>
     </div>
     <div class="nav-center">

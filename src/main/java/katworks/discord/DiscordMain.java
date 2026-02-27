@@ -105,6 +105,10 @@ public class DiscordMain {
         cd.add(Commands.slash("scrapefrom","Scrape an account continuing from the specified post ID.")
                 .addOption(OptionType.STRING,"postid","The post ID to continue from.",true));
 
+        cd.add(Commands.slash("setartistdescription","Set description for an artist by name.")
+                .addOption(OptionType.STRING,"artistname","The name of the artist to set the description for.",true)
+                .addOption(OptionType.STRING,"description","The description to set.",true));
+
         //todo: make a "link account to artist" command
         jda.updateCommands().addCommands(cd).queue();
     }

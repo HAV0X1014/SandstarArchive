@@ -39,7 +39,7 @@ public class ScrapeService {
             try {
                 System.out.println("Checking " + account.screenName + ".");
                 TwitterScraper.scrapeByAccount(account);
-                discordStatusUpdate.append(account.screenName).append("\n");
+                discordStatusUpdate.append(account.screenName).append(", ");
             } catch (InterruptedException e) {
                 if (config.discordEnabled) SendStatusMessage.sendMessage("Failed to complete scrape for: " + account.screenName + "!");
                 System.out.println("Failed to complete scrape for: " + account.screenName + "!");
@@ -49,19 +49,5 @@ public class ScrapeService {
         //if (config.discordEnabled) SendStatusMessage.sendMessage("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
         System.out.println("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
         SendStatusMessage.sendMessage(discordStatusUpdate.toString());
-    }
-
-    /**
-     * Use when you want to run an account scrape manually.
-     * @param account
-     */
-    public void runImmediateScrapeForAccount(TwitterAccount account) {
-        new Thread(() ->{
-            try {
-                TwitterScraper.scrapeByAccount(account);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
-        }).start();
     }
 }

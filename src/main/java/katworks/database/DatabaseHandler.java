@@ -1191,4 +1191,35 @@ public class DatabaseHandler {
         });
         return "Added alias name " + newAliasName  + " for artist " + artistName + ".";
     }
+
+    public static List<Artist> getAllArtists() {
+        List<Artist> results = new ArrayList<>();
+        String sql = "SELECT * FROM artists ORDER BY name ASC";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                results.add(new Artist(
+                        rs.getInt("id"),
+                        rs.getString("name"),
+                        rs.getString("description"))
+                );
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return results;
+    }
+
+    public static void setArtistDescriptionByName(String artistName, String description) {
+        if (artistName == null || description == null) return;
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "UPDATE artists SET description = ? WHERE name = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, description);
+                ps.setString(2, artistName);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
 }

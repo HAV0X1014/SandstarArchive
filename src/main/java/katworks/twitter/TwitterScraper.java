@@ -47,7 +47,7 @@ public class TwitterScraper {
             do {
                 //scrape the media page. default is with no cursor (newest posts). later requests will use the cursor to continue "scrolling" downward.
                 ConfigUserMedia mediaScrape = new ConfigUserMedia(account.twitterId, cursor);
-                mediaScrape.count = 999; //set to 999 because default value is 20. not sure if this actually does anything of note.
+                mediaScrape.count = 4096; //set to 999 because default value is 20. not sure if this actually does anything of note. testing 4096
                 UserMedia userMedia = api.scrap(mediaScrape, CLIENT);
                 //JsonUtil is something from java-twitter-scraper, it returns the result as a string.
                 String json = JsonUtil.toJson(userMedia);
@@ -116,7 +116,7 @@ public class TwitterScraper {
                     System.out.println(stopReached ? "Reached previously scraped post. Stopping." : "No more items found. Ending scrape.");
                     break;
                 }
-                System.out.println("Next scrape preparation complete...\n\n");
+                System.out.println("Next scrape preparation complete...\n");
                 Thread.sleep(3000);
             } while (notDone);
         } catch (IOException | URISyntaxException e) {
@@ -130,19 +130,23 @@ public class TwitterScraper {
      * @param items
      */
     private static boolean processItems(JSONArray items, TwitterAccount account) {
+        //System.out.println("Starting processing of new items array");
         try {
             for (int it = 0; it < items.length(); it++) {
                 JSONObject post = items.getJSONObject(it);
                 String currentPostId = post.getString("id");
-
-                if (account.lastScrapedId != null && currentPostId.equals(account.lastScrapedId)) {
-                    return true;
+                //System.out.println("Checking if newer than last scraped post");
+                if (account.lastScrapedId != null) {
+                    if (Long.parseUnsignedLong(currentPostId) <= Long.parseUnsignedLong(account.lastScrapedId)) {
+                        //System.out.println("Too new.");
+                        return true;
+                    }
                 }
                 TwitterPost twitterPost = new TwitterPost();
                 // Safety check: ensure it's a valid post object before parsing
                 //this should always be there idk why gemini insisted on it lol
-                if (!post.has("user")) continue;
-                System.out.println("Artist: " + post.getJSONObject("user").getString("screenName")); //this is for println version
+                //if (!post.has("user")) continue;
+                System.out.println("Account is: " + post.getJSONObject("user").getString("screenName")); //this is for println version
                 String screenName = post.getJSONObject("user").getString("screenName");
                 /* POSTS TABLE DATA TO INSERT
                 //safety_rating is added later.
@@ -231,23 +235,24 @@ public class TwitterScraper {
                         postStmt.setLong(5, twitterPost.archiveDate);
                         postStmt.setString(6,"Waiting");
                         postStmt.setString(7,"Waiting");
-                        postStmt.executeUpdate();
+                        int rowsUpdated = postStmt.executeUpdate();
 
-                        // Fill out the Media templates for this post
-                        for (TwitterMedia m : twitterPost.media) {
-                            mediaStmt.setString(1, twitterPost.postId);
-                            mediaStmt.setString(2, m.mediaType);
-                            mediaStmt.setString(3, m.originalUrl);
-                            mediaStmt.setString(4, m.localPath);
-                            mediaStmt.setString(5, m.dataHash);
-                            mediaStmt.setString(6, m.perceptualHash);
-                            mediaStmt.setInt(7, m.width);
-                            mediaStmt.setInt(8, m.height);
-                            mediaStmt.setLong(9, m.filesize);
-                            mediaStmt.setInt(10, m.mediaIndex);
-                            mediaStmt.setString(11,"Waiting");
-                            mediaStmt.setString(12,"Waiting");
-                            mediaStmt.executeUpdate();
+                        if (rowsUpdated > 0) { //if there was an actual new post inserted (prevents duplicate media entries)
+                            for (TwitterMedia m : twitterPost.media) {
+                                mediaStmt.setString(1, twitterPost.postId);
+                                mediaStmt.setString(2, m.mediaType);
+                                mediaStmt.setString(3, m.originalUrl);
+                                mediaStmt.setString(4, m.localPath);
+                                mediaStmt.setString(5, m.dataHash);
+                                mediaStmt.setString(6, m.perceptualHash);
+                                mediaStmt.setInt(7, m.width);
+                                mediaStmt.setInt(8, m.height);
+                                mediaStmt.setLong(9, m.filesize);
+                                mediaStmt.setInt(10, m.mediaIndex);
+                                mediaStmt.setString(11, "Waiting");
+                                mediaStmt.setString(12, "Waiting");
+                                mediaStmt.executeUpdate();
+                            }
                         }
                     } catch (SQLException e) {
                         throw new RuntimeException(e);
@@ -258,7 +263,7 @@ public class TwitterScraper {
                     DiscordNotificationService.sendNewPostNotification(twitterPost, account);
                 }
 
-                System.out.println("\n");
+                System.out.println();
                 //sleep to not get rate limited by discord or twitter
                 Thread.sleep(4570);
             }
@@ -280,13 +285,13 @@ public class TwitterScraper {
     public static void scrapeFromPostId(TwitterAccount account, String startPostId) throws InterruptedException {
         boolean stopReached = false;
         boolean foundStartPost = false;
-
+        account.lastScrapedId = null; //force set to null to not stop immediately
         try {
             String cursor = null;
             boolean notDone = true;
             do {
                 ConfigUserMedia mediaScrape = new ConfigUserMedia(account.twitterId, cursor);
-                mediaScrape.count = 999;
+                mediaScrape.count = 4096;
                 UserMedia userMedia = api.scrap(mediaScrape, CLIENT);
                 String json = JsonUtil.toJson(userMedia);
                 JSONObject mediaJson = new JSONObject(json);
@@ -361,7 +366,7 @@ public class TwitterScraper {
                     System.out.println(stopReached ? "Reached previously scraped post. Stopping." : "No more items found. Ending scrape.");
                     break;
                 }
-                System.out.println("Next scrape preparation complete...\n\n");
+                System.out.println("Next scrape preparation complete...\n");
                 Thread.sleep(3000);
             } while (notDone);
         } catch (IOException | URISyntaxException e) {
@@ -518,7 +523,6 @@ public class TwitterScraper {
                 throw new RuntimeException(e);
             }
         });
-        System.out.println("\n");
         return twitterPost;
     }
 

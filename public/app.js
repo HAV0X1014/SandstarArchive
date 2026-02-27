@@ -63,6 +63,9 @@ function router() {
 
     if (path === '/' || path === '/index.html') {
         renderGlobalFeed(page);
+    } else if (path === '/artists') {
+        renderAllArtistsView();
+        window.scrollTo(0, 0);
     } else if (path.startsWith('/artist/')) {
         renderArtistView(path.split('/')[2]);
         window.scrollTo(0, 0);
@@ -92,6 +95,36 @@ async function renderGlobalFeed(page) {
         <div id="pagination" class="pagination"></div>
     `;
     loadPage(null, page);
+}
+
+async function renderAllArtistsView() {
+    app.innerHTML = `
+        <div class="page-container">
+            <h1>All Artists</h1>
+            <div id="artistsList" class="gallery" style="margin-top: 20px;">
+                <p>Loading artists...</p>
+            </div>
+        </div>`;
+
+    try {
+        const res = await fetch('/api/artists');
+        const artists = await res.json();
+
+        const container = document.getElementById('artistsList');
+        if (artists.length === 0) {
+            container.innerHTML = '<p>No artists found.</p>';
+            return;
+        }
+
+        container.innerHTML = artists.map(a => `
+            <div class="post-card" onclick="navigateTo('/artist/${encodeURIComponent(a.name)}')" style="padding: 15px; display: block; height: auto;">
+                <h3 class="text-primary">${a.name}</h3>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 5px;">${a.description || 'No description provided.'}</p>
+            </div>
+        `).join('');
+    } catch (e) {
+        document.getElementById('artistsList').innerHTML = '<p>Error loading artists.</p>';
+    }
 }
 
 async function renderArtistView(name) {
@@ -521,21 +554,38 @@ async function performSearch(query) {
 
 function renderSearchResults(artists, accounts) {
     searchResults.innerHTML = '';
+
     if (artists.length === 0 && accounts.length === 0) {
-        searchResults.innerHTML = `<div class="search-item">No results found</div>`;
+        const div = document.createElement('div');
+        div.className = 'search-item';
+        div.innerText = 'No results found';
+        searchResults.appendChild(div);
+        searchResults.classList.remove('hidden');
+        return;
     }
+
     if (artists.length > 0) {
-        searchResults.innerHTML += `<div class="search-header">Artists</div>`;
+        const header = document.createElement('div');
+        header.className = 'search-header';
+        header.innerText = 'Artists';
+        searchResults.appendChild(header);
+
         artists.forEach(artist => {
             const div = document.createElement('div');
             div.className = 'search-item';
             div.innerText = artist.name;
-            div.onclick = () => { navigateTo(`/artist/${artist.name}`); closeSearch(); };
+            // Also added encodeURIComponent here to support artist names with spaces/special characters
+            div.onclick = () => { navigateTo(`/artist/${encodeURIComponent(artist.name)}`); closeSearch(); };
             searchResults.appendChild(div);
         });
     }
+
     if (accounts.length > 0) {
-        searchResults.innerHTML += `<div class="search-header">Accounts</div>`;
+        const header = document.createElement('div');
+        header.className = 'search-header';
+        header.innerText = 'Accounts';
+        searchResults.appendChild(header);
+
         accounts.forEach(acc => {
             const div = document.createElement('div');
             div.className = 'search-item';
@@ -544,6 +594,7 @@ function renderSearchResults(artists, accounts) {
             searchResults.appendChild(div);
         });
     }
+
     searchResults.classList.remove('hidden');
 }
 
