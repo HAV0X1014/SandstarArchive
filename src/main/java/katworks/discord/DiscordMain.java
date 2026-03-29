@@ -11,6 +11,8 @@ import net.dv8tion.jda.api.interactions.commands.build.Commands;
 import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 import static katworks.Main.config;
 
@@ -18,6 +20,8 @@ public class DiscordMain {
     public static JDA jda;
     public static String self;
     public static TextChannel feedChannel;
+    public static Map<String,TextChannel> feedSafetyChannelMap = new HashMap<>();
+    public static TextChannel rejectedChannel;
     public static TextChannel statusChannel;
     public static Role allowedRole;
 
@@ -35,6 +39,11 @@ public class DiscordMain {
             System.out.println("Logged in as " + jda.getSelfUser().getName());
             statusChannel = jda.getTextChannelById(config.statusChannel);
             SendStatusMessage.sendMessage("Online.");
+            //for each safety rating, get the corresponding channel in the config, then the actual discord channel, then put it in the map
+            for (int i = 0; i < config.safetyRatings.size() - 1; i++) { //org.json needs a minus one on the size because... of course it does.
+                feedSafetyChannelMap.put(config.safetyRatings.get(i),jda.getTextChannelById(config.channelsForSafetyRatings.get(i)));
+            }
+            rejectedChannel = jda.getTextChannelById(config.rejectedChannel);
             feedChannel = jda.getTextChannelById(config.rawFeedChannel);
             allowedRole = jda.getRoleById(config.allowedUsersRoleID);
         } catch (InterruptedException e) {
@@ -43,7 +52,7 @@ public class DiscordMain {
     }
 
     public void registerCommands() {
-        System.out.println("Registering commands...");
+        //System.out.println("Registering commands...");
         ArrayList<CommandData> cd = new ArrayList<>();
 
         OptionData postContentOptions = new OptionData(OptionType.STRING,"contentrating","The content rating of the post.",true);
@@ -92,6 +101,7 @@ public class DiscordMain {
                 .addOptions(accountStatusOptions) //Active, Deleted, or Suspended
                 .addOption(OptionType.BOOLEAN,"isprotected","True/False if the account is protected.",false)
                 .addOption(OptionType.BOOLEAN,"downloadstatus","True/False of whether to download the account.",false)
+                .addOption(OptionType.STRING,"lastscrapedid","The last scraped post ID to set.",false)
                 .addOptions(editAccountSafetyOptions)); //just the safety ratings
 
         cd.add(Commands.slash("deleteaccount","Delete account from database.")
@@ -103,11 +113,14 @@ public class DiscordMain {
                 .addOptions(aliasSafetyOptions));
 
         cd.add(Commands.slash("scrapefrom","Scrape an account continuing from the specified post ID.")
-                .addOption(OptionType.STRING,"postid","The post ID to continue from.",true));
+                .addOption(OptionType.STRING,"postid","The post ID to continue from.",true)
+                .addOption(OptionType.STRING,"stopid","[Optional] The post ID to stop at.",false));
 
         cd.add(Commands.slash("setartistdescription","Set description for an artist by name.")
                 .addOption(OptionType.STRING,"artistname","The name of the artist to set the description for.",true)
                 .addOption(OptionType.STRING,"description","The description to set.",true));
+
+        cd.add(Commands.slash("ping","Check if the bot is running."));
 
         //todo: make a "link account to artist" command
         jda.updateCommands().addCommands(cd).queue();

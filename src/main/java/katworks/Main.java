@@ -12,13 +12,14 @@ import katworks.web.WebServer;
 import okhttp3.OkHttpClient;
 
 import java.io.File;
-import java.util.logging.Logger;
+import java.time.LocalTime;
 
 public class Main {
     public static TwitterApi api;
     public static Config config;
     public static final OkHttpClient CLIENT = new OkHttpClient();
     public static WriteQueue writeQueue;
+    public static final LocalTime startTime = LocalTime.now();
 
     public static void main(String[] args) {
         //check if config and account exists. if not, set it up with the needed content to fill, then exit.
@@ -40,7 +41,7 @@ public class Main {
         //start twitter-scraper-java
         api = TwitterApi.newTwitterApi();
         Secret.defineFromFile(api,new File("account.json"));
-        // This is required for correct feature switches for requests.
+        //this is required for correct feature switches for requests.
         //this MUST be scraped at least once per api object.
         api.page = FeatureFetcher.fetchTwitterPage(api.cookie, CLIENT, null);
 
@@ -53,10 +54,12 @@ public class Main {
         if (config.discordEnabled) {
             new DiscordMain().start();
         }
-        //this is very much so not ready yet
-        WebServer.start();
+
+        if (config.webEnabled) {
+            WebServer.start();
+        }
 
         writeQueue = new WriteQueue(); //global write queue that prevents any locked database issues
-        new ScrapeService().start(); //service that runs scrapes for new content every 3 hours.
+        new ScrapeService().start(); //service that runs scrapes for new content every 2 hours.
     }
 }

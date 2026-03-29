@@ -5,6 +5,7 @@ import katworks.discord.SendStatusMessage;
 import katworks.impl.TwitterAccount;
 import katworks.twitter.TwitterScraper;
 
+import java.util.Arrays;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -34,20 +35,24 @@ public class ScrapeService {
         System.out.println("Scrape initiated at: " + new Date());
         if (config.discordEnabled) SendStatusMessage.sendMessage("Scrape initiated.");
         StringBuilder discordStatusUpdate = new StringBuilder();
-        discordStatusUpdate.append("Accounts checked:\n");
+        discordStatusUpdate.append("Accounts checked:\n```");
         for (TwitterAccount account : accountList) {
             try {
                 System.out.println("Checking " + account.screenName + ".");
                 TwitterScraper.scrapeByAccount(account);
                 discordStatusUpdate.append(account.screenName).append(", ");
+            } catch (Exception e) {
+                if (config.discordEnabled) SendStatusMessage.sendMessage("Failed to complete scrape for: " + account.screenName + "!\n" + e.getMessage() + "\n" + Arrays.toString(e.getStackTrace()));
+                System.err.println("Failed to complete scrape for: " + account.screenName + "!");
+                e.printStackTrace();
+            }
+            try {
+                Thread.sleep(3000);
             } catch (InterruptedException e) {
-                if (config.discordEnabled) SendStatusMessage.sendMessage("Failed to complete scrape for: " + account.screenName + "!");
-                System.out.println("Failed to complete scrape for: " + account.screenName + "!");
                 throw new RuntimeException(e);
             }
         }
-        //if (config.discordEnabled) SendStatusMessage.sendMessage("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
         System.out.println("Scrape cycle complete. Next scrape in " + config.checkIntervalHours + " hours.");
-        SendStatusMessage.sendMessage(discordStatusUpdate.toString());
+        SendStatusMessage.sendMessage(discordStatusUpdate.append("\n```").toString());
     }
 }

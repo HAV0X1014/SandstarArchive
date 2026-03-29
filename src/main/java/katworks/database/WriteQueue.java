@@ -36,13 +36,21 @@ public class WriteQueue {
      */
     public void runAsyncWrite(Consumer<Connection> task) {
         writerExecutor.submit(() -> {
-            try (Connection conn = getConnection()) {
-                // We wrap every task in a transaction for safety and speed
+            Connection conn = null;
+            try {
+                conn = getConnection();
                 conn.setAutoCommit(false);
                 task.accept(conn);
                 conn.commit();
             } catch (Exception e) {
                 System.err.println("Database write task failed: " + e.getMessage());
+                if (conn != null) {
+                    try { conn.rollback(); } catch (SQLException ex) { /* ignored */ }
+                }
+            } finally {
+                if (conn != null) {
+                    try { conn.close(); } catch (SQLException ex) { /* ignored */ }
+                }
             }
         });
     }

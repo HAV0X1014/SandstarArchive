@@ -19,6 +19,7 @@ import java.util.List;
 
 import static katworks.Main.config;
 import static katworks.discord.DiscordMain.feedChannel;
+import static katworks.discord.DiscordMain.feedSafetyChannelMap;
 import static katworks.discord.DiscordMain.jda;
 
 public class DiscordNotificationService {
@@ -54,7 +55,7 @@ public class DiscordNotificationService {
     }
 
     private static void sendToRawFeed(TwitterPost post, TwitterAccount account, Message threadMsg) {
-        if (feedChannel == null) return;
+        if (account.safetyRating == null) return;
 
         List<MessageEmbed> embedGroup = new ArrayList<>();
         List<Attachment> attachments = threadMsg.getAttachments();
@@ -94,7 +95,7 @@ public class DiscordNotificationService {
                         if ("Waiting".equalsIgnoreCase(rating)) continue;
                         contentButtons.add(Button.secondary("rate:Content:" + rating + ":" + post.postId, rating));
                     }
-                    feedChannel.sendMessage(messageText)
+                    feedSafetyChannelMap.get(account.safetyRating).sendMessage(messageText)
                             .setComponents(ActionRow.of(safetyButtons),ActionRow.of(contentButtons))
                             .queue();
                     return;
@@ -130,7 +131,7 @@ public class DiscordNotificationService {
         }
 
         //send embeds to feed channel with rating buttons attached.
-        feedChannel.sendMessageEmbeds(embedGroup)
+        feedSafetyChannelMap.get(account.safetyRating).sendMessageEmbeds(embedGroup)
                 .setComponents(ActionRow.of(safetyButtons),ActionRow.of(contentButtons))
                 .queue();
     }

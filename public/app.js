@@ -10,7 +10,7 @@ let searchTimeout;
 let currentUrlKey = window.location.pathname + window.location.search;
 let pageCache = {};
 let accountCache = {};
-let validRatings = { content: [], safety: [] }; // Stores config from API
+let validRatings = { content: [], safety: [] };
 
 let selectedFilters = {
     content: [],
@@ -23,32 +23,111 @@ function saveScrollState() {
     pageCache[currentUrlKey].scrollY = window.scrollY;
 }
 
-// --- AUTH LOGIC ---
-let adminKey = localStorage.getItem('adminKey');
+// --- AUTH LOGIC (RBAC) ---
+let currentUser = {
+    loggedIn: false,
+    username: null,
+    role: 'Read'
+};
+
+function canWrite() {
+    return currentUser.role === 'Write' || currentUser.role === 'Execute';
+}
+
+function canExecute() {
+    return currentUser.role === 'Execute';
+}
 
 function renderAuth() {
-    if (adminKey) {
-        authSection.innerHTML = `<button class="btn" onclick="logout()">Logout</button>`;
+    if (currentUser.loggedIn) {
+        let adminBtn = canExecute() ? `<button class="btn btn-primary" onclick="navigateTo('/admin')">Admin</button>` : '';
+        authSection.innerHTML = `
+            ${adminBtn}
+            <a href="javascript:void(0)" onclick="navigateTo('/me')" style="margin: 0 10px; font-size: 0.85rem; color: var(--text-secondary); text-decoration: none; font-weight: bold;">${currentUser.username}</a>
+            <button class="btn" onclick="logout()" style="background: #a31; color: white; border-color: #611;">Logout</button>
+        `;
     } else {
-        authSection.innerHTML = `<button class="btn" onclick="showLogin()">Login</button>`;
+        authSection.innerHTML = `<button class="btn btn-primary" onclick="openAuthModal('login')">Log In / Sign Up</button>`;
     }
 }
 
-async function showLogin() {
-    const key = prompt("Enter Admin Code:");
-    if (!key) return;
-    const resp = await fetch('/api/auth/verify', { method: 'POST', body: key });
-    if (resp.ok) {
-        localStorage.setItem('adminKey', key);
-        adminKey = key;
-        location.reload();
+// --- MODAL LOGIC ---
+function openAuthModal(mode) {
+    document.getElementById('authModal').classList.remove('hidden');
+    toggleAuthMode(mode);
+}
+
+function closeAuthModal() {
+    document.getElementById('authModal').classList.add('hidden');
+}
+
+function toggleAuthMode(mode) {
+    if (mode === 'login') {
+        document.getElementById('loginFormContainer').classList.remove('hidden');
+        document.getElementById('registerFormContainer').classList.add('hidden');
     } else {
-        alert("Invalid Key");
+        document.getElementById('loginFormContainer').classList.add('hidden');
+        document.getElementById('registerFormContainer').classList.remove('hidden');
     }
 }
 
-function logout() {
-    localStorage.removeItem('adminKey');
+async function submitLogin() {
+    const identifier = document.getElementById('loginIdentifier').value;
+    const password = document.getElementById('loginPassword').value;
+
+    if (!identifier || !password) return alert("Please fill in all fields.");
+
+    const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier, password })
+    });
+
+    const data = await res.json();
+    if (data.success) {
+        currentUser = { loggedIn: true, username: data.username, role: data.role };
+        closeAuthModal();
+        location.reload(); // Reload to refresh permissions across the UI
+    } else {
+        alert(data.error || "Login failed");
+    }
+}
+
+async function submitRegister() {
+    const username = document.getElementById('regUsername').value;
+    const email = document.getElementById('regEmail').value;
+    const password = document.getElementById('regPassword').value;
+    const inviteKey = document.getElementById('regInvite').value;
+
+    // UPDATE: Now checks for inviteKey!
+    if (!username || !password || password.length < 6 || !inviteKey) {
+        return alert("Username, Password (min 6 chars), and Invite Key are required.");
+    }
+
+    const payload = { username, password, inviteKey };
+    if (email) payload.email = email;
+
+    const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (data.success) {
+        alert("Registration successful! You can now log in.");
+        toggleAuthMode('login');
+        document.getElementById('loginIdentifier').value = username;
+        document.getElementById('loginPassword').value = '';
+    } else {
+        alert(data.error || "Registration failed");
+    }
+}
+
+async function logout() {
+    await fetch('/api/logout', { method: 'POST' });
+    currentUser = { loggedIn: false, username: null, role: 'Read' };
+    navigateTo('/');
     location.reload();
 }
 
@@ -59,12 +138,23 @@ function router() {
     const page = parseInt(urlParams.get('page')) || 1;
 
     app.innerHTML = '';
-    document.body.classList.remove('detail-view-active');
 
     if (path === '/' || path === '/index.html') {
         renderGlobalFeed(page);
     } else if (path === '/artists') {
         renderAllArtistsView();
+        window.scrollTo(0, 0);
+    } else if (path === '/admin') {
+        renderAdminView();
+        window.scrollTo(0, 0);
+    } else if (path === '/admin/keys') {
+        renderAdminKeysView(page);
+        window.scrollTo(0, 0);
+    } else if (path === '/admin/users') {
+        renderAdminUsersView(page);
+        window.scrollTo(0, 0);
+    } else if (path === '/me') {
+        renderProfileView();
         window.scrollTo(0, 0);
     } else if (path.startsWith('/artist/')) {
         renderArtistView(path.split('/')[2]);
@@ -72,13 +162,12 @@ function router() {
     } else if (path.startsWith('/account/')) {
         renderAccountView(path.split('/')[2], page);
     } else if (path.startsWith('/post/')) {
-        document.body.classList.add('detail-view-active');
         renderPostDetail(path.split('/')[2]);
         window.scrollTo(0, 0);
     } else if (path.startsWith('/media/')) {
-        document.body.classList.add('detail-view-active');
         renderMediaDetail(path.split('/')[2]);
         window.scrollTo(0, 0);
+
     } else {
         renderGlobalFeed(page);
     }
@@ -95,6 +184,583 @@ async function renderGlobalFeed(page) {
         <div id="pagination" class="pagination"></div>
     `;
     loadPage(null, page);
+}
+
+function renderAdminView() {
+    if (!canExecute()) {
+        navigateTo('/');
+        return;
+    }
+
+    const cards = [
+        {
+            task: "add account new create",
+            title: "Add Account",
+            html: `
+                <input type="text" id="addAccHandle" class="input-textarea admin-input" placeholder="Twitter Handle (no @)">
+                <input type="text" id="addAccArtist" class="input-textarea admin-input" placeholder="Artist Name">
+                <label class="admin-label"><input type="checkbox" id="addAccDownload" checked> Enable Downloads</label>
+                <select id="addAccSafety" class="admin-input"><option value="" disabled selected>Safety Rating</option>${generateOptionsHtml('Safety', 'Safe')}</select>
+                <button class="btn btn-primary" onclick="adminRequest('POST', '/api/accounts', { handle: document.getElementById('addAccHandle').value, artist: document.getElementById('addAccArtist').value, download: document.getElementById('addAccDownload').checked, safety: document.getElementById('addAccSafety').value })">Submit</button>
+            `
+        },
+        {
+            task: "edit update modify account",
+            title: "Edit Account",
+            html: `
+                <input type="text" id="editAccHandle" class="input-textarea admin-input" placeholder="Target Twitter Handle (Req)">
+                <input type="text" id="editAccDisplay" class="input-textarea admin-input" placeholder="New Display Name">
+                <select id="editAccStatus" class="admin-input"><option value="">-- No Change (Account Status) --</option><option value="Active">Active</option><option value="Deleted">Deleted</option><option value="Suspended">Suspended</option></select>
+                <select id="editAccProtected" class="admin-input"><option value="">-- No Change (Protected) --</option><option value="true">True</option><option value="false">False</option></select>
+                <select id="editAccDownload" class="admin-input"><option value="">-- No Change (Download) --</option><option value="true">True</option><option value="false">False</option></select>
+                <select id="editAccSafety" class="admin-input"><option value="">-- No Change (Safety) --</option>${generateOptionsHtml('Safety', '')}</select>
+                <button class="btn btn-primary" onclick="submitEditAccount()">Submit</button>
+            `
+        },
+        {
+            task: "delete remove account",
+            title: "Delete Account",
+            html: `
+                <input type="text" id="delAccHandle" class="input-textarea admin-input" placeholder="Twitter Handle">
+                <button class="btn btn-primary" onclick="adminRequest('DELETE', '/api/accounts/' + document.getElementById('delAccHandle').value, null)">Submit</button>
+            `
+        },
+        {
+            task: "add new alias name",
+            title: "Add Alias",
+            html: `
+                <input type="text" id="aliasArtist" class="input-textarea admin-input" placeholder="Existing Artist Name">
+                <input type="text" id="aliasName" class="input-textarea admin-input" placeholder="New Alias Name">
+                <select id="aliasSafety" class="admin-input">${generateOptionsHtml('Safety', 'Safe')}</select>
+                <button class="btn btn-primary" onclick="adminRequest('POST', '/api/artists/' + document.getElementById('aliasArtist').value + '/aliases', { aliasName: document.getElementById('aliasName').value, safetyRating: document.getElementById('aliasSafety').value })">Submit</button>
+            `
+        },
+        {
+            task: "edit update modify artist description text",
+            title: "Edit Artist Description",
+            html: `
+                <input type="text" id="descArtist" class="input-textarea admin-input" placeholder="Artist Name">
+                <textarea id="descText" class="input-textarea admin-input" rows="3" placeholder="New Description"></textarea>
+                <button class="btn btn-primary" onclick="adminRequest('PATCH', '/api/artists/' + document.getElementById('descArtist').value, { description: document.getElementById('descText').value })">Submit</button>
+            `
+        },
+        {
+            task: "scrape fetch update download from post",
+            title: "Scrape From Post",
+            html: `
+                <input type="text" id="scrapePostId" class="input-textarea admin-input" placeholder="Post ID (e.g. 1876543210)">
+                <button class="btn btn-primary" onclick="adminRequest('POST', '/api/tasks/scrape', { postId: document.getElementById('scrapePostId').value })">Submit</button>
+            `
+        },
+        {
+            task: "download fetch specific post url",
+            title: "Download Post",
+            html: `
+                <input type="text" id="dlPostUrl" class="input-textarea admin-input" placeholder="Post URL">
+                <select id="dlPostContent" class="admin-input"><option value="" disabled selected>Content Rating</option>${generateOptionsHtml('Content', '')}</select>
+                <select id="dlPostSafety" class="admin-input"><option value="" disabled selected>Safety Rating</option>${generateOptionsHtml('Safety', '')}</select>
+                <button class="btn btn-primary" onclick="adminRequest('POST', '/api/tasks/download', { url: document.getElementById('dlPostUrl').value, contentRating: document.getElementById('dlPostContent').value, safetyRating: document.getElementById('dlPostSafety').value })">Submit</button>
+            `
+        }
+    ];
+
+    app.innerHTML = `
+        <div class="page-container admin-page">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                <h1>Admin Control Panel</h1>
+                <button class="btn btn-primary" onclick="navigateTo('/admin/keys')">Manage Invite Keys &rarr;</button>
+                <button class="btn btn-primary" onclick="navigateTo('/admin/users')">Manage Users &rarr;</button>
+            </div>
+            <input type="text" id="adminTaskFilter" class="input-textarea" style="margin: 20px 0; max-width: 400px;" placeholder="Filter admin tasks by name...">
+            <div class="admin-tasks" id="adminTasksContainer">
+                ${cards.map(c => `
+                    <div class="admin-card" data-task="${c.task}">
+                        <h3>${c.title}</h3>
+                        ${c.html}
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+
+    document.getElementById('adminTaskFilter').addEventListener('input', (e) => {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.admin-card').forEach(card => {
+            if (card.dataset.task.includes(term)) card.classList.remove('hidden');
+            else card.classList.add('hidden');
+        });
+    });
+}
+
+async function renderAdminKeysView(page) {
+    if (!canExecute()) {
+        navigateTo('/');
+        return;
+    }
+
+    app.innerHTML = `
+        <div class="page-container admin-page" style="max-width: 100%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h1>Manage Invite Keys</h1>
+                <button class="btn" onclick="navigateTo('/admin')">&larr; Back to Admin</button>
+            </div>
+
+            <!-- CREATE NEW KEY -->
+            <div class="new-key-card" style="margin-bottom: 30px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <h3 style="margin: 0; border: none; padding: 0;">Create New Key:</h3>
+                <small>Grant role:</small>
+                <select id="newKeyRole" class="admin-input" style="width: auto; margin: 0;">
+                    <option value="Read">Read Role</option>
+                    <option value="Write">Write Role</option>
+                    <option value="Execute">Execute Role</option>
+                </select>
+                <small>Max Uses (-1 for unlimited):</small>
+                <input type="number" id="newKeyUses" class="input-textarea admin-input" style="width: 120px; margin: 0;" placeholder="Uses (-1 = Inf)" value="-1">
+
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <small>Expires:</small>
+                    <input type="datetime-local" id="newKeyExpires" class="admin-input" style="margin: 0;" title="Leave blank for never">
+                </div>
+
+                <button class="btn btn-primary" onclick="createNewKey()">Generate</button>
+            </div>
+
+            <!-- KEYS TABLE -->
+            <div style="overflow-x: auto;">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Role</th>
+                            <th>Uses (Current / Max)</th>
+                            <th>Expires At (Local Time)</th>
+                            <th>Creator ID</th>
+                            <th>Created At</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="keysTableBody">
+                        <tr><td colspan="7">Loading keys...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="keysPagination" class="pagination"></div>
+        </div>
+    `;
+
+    fetchAndRenderKeys(page);
+}
+
+async function fetchAndRenderKeys(page) {
+    try {
+        const res = await fetch(`/api/keys?page=${page}`);
+        const keys = await res.json();
+        const tbody = document.getElementById('keysTableBody');
+
+        if (keys.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="7" style="text-align: center;">No keys found on this page.</td></tr>`;
+        } else {
+            tbody.innerHTML = keys.map(k => {
+                const isUnlimited = k.maxUses === -1;
+                const usageText = isUnlimited ? `${k.timesUsed} / &infin;` : `${k.timesUsed} /`;
+
+                // Format Expiration Date for the HTML input (YYYY-MM-DDThh:mm)
+                let expDate = '';
+                if (k.expiresAt !== -1) {
+                    // Adjust to local timezone format for datetime-local input
+                    const d = new Date(k.expiresAt * 1000);
+                    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+                    expDate = d.toISOString().slice(0, 16);
+                }
+
+                return `
+                <tr>
+                    <td style="font-family: monospace; font-size: 1.1rem; color: var(--primary);">${k.inviteKey}</td>
+                    <td>
+                        <select id="role-${k.id}" class="admin-input" style="margin: 0; min-width: 90px;">
+                            <option value="Read" ${k.grantRole === 'Read' ? 'selected' : ''}>Read</option>
+                            <option value="Write" ${k.grantRole === 'Write' ? 'selected' : ''}>Write</option>
+                            <option value="Execute" ${k.grantRole === 'Execute' ? 'selected' : ''}>Execute</option>
+                        </select>
+                    </td>
+                    <td style="display: flex; align-items: center; gap: 8px; border-bottom: none;">
+                        <span style="white-space: nowrap;">${usageText}</span>
+                        <input type="number" id="uses-${k.id}" class="admin-input input-textarea" style="width: 70px; margin: 0;" value="${k.maxUses}">
+                    </td>
+                    <td>
+                        <input type="datetime-local" id="expires-${k.id}" class="admin-input" style="margin: 0;" value="${expDate}" title="Clear to make permanent">
+                    </td>
+                    <td style="color: #aaa;">${k.createdByUserId === 0 ? 'System' : k.createdByUserId}</td>
+                    <td style="color: #aaa; font-size: 0.85rem;">${new Date(k.creationDate * 1000).toLocaleString()}</td>
+                    <td>
+                        <button class="btn" style="background: #2a2; margin-bottom: 4px; width: 100%;" onclick="saveKey(${k.id})">Save</button>
+                        <button class="btn" style="background: #a22; width: 100%;" onclick="deleteKey(${k.id})">Delete</button>
+                    </td>
+                </tr>
+            `}).join('');
+        }
+
+        const paginationDiv = document.getElementById('keysPagination');
+        let prevDisabled = page <= 1 ? 'disabled' : '';
+        let nextDisabled = keys.length < 10 ? 'disabled' : '';
+
+        paginationDiv.innerHTML = `
+            <button class="page-btn" ${prevDisabled} onclick="navigateTo('/admin/keys?page=${page - 1}')">Previous</button>
+            <span class="pagination-text">Page ${page}</span>
+            <button class="page-btn" ${nextDisabled} onclick="navigateTo('/admin/keys?page=${page + 1}')">Next</button>
+        `;
+
+    } catch (e) {
+        alert("Failed to fetch keys.");
+        console.error(e);
+    }
+}
+
+async function createNewKey() {
+    const role = document.getElementById('newKeyRole').value;
+    const maxUses = document.getElementById('newKeyUses').value;
+    const expiresInput = document.getElementById('newKeyExpires').value;
+
+    // Convert local datetime to Unix Epoch Seconds, or send -1 if empty
+    const expiresAt = expiresInput ? Math.floor(new Date(expiresInput).getTime() / 1000) : -1;
+
+    const res = await fetch('/api/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, maxUses, expiresAt })
+    });
+
+    const data = await res.json();
+    if (data.success) {
+        navigateTo('/admin/keys?page=1');
+    } else {
+        alert(data.error || "Failed to create key");
+    }
+}
+
+async function saveKey(id) {
+    const role = document.getElementById(`role-${id}`).value;
+    const maxUses = document.getElementById(`uses-${id}`).value;
+    const expiresInput = document.getElementById(`expires-${id}`).value;
+
+    const expiresAt = expiresInput ? Math.floor(new Date(expiresInput).getTime() / 1000) : -1;
+
+    const res = await fetch(`/api/keys/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, maxUses, expiresAt })
+    });
+
+    if (res.ok) {
+        const page = parseInt(new URLSearchParams(window.location.search).get('page')) || 1;
+        fetchAndRenderKeys(page);
+    } else {
+        alert("Failed to update key.");
+    }
+}
+
+async function deleteKey(id) {
+    if (!confirm("Are you sure you want to permanently delete this key?")) return;
+
+    const res = await fetch(`/api/keys/${id}`, { method: 'DELETE' });
+    if (res.ok) {
+        const page = parseInt(new URLSearchParams(window.location.search).get('page')) || 1;
+        fetchAndRenderKeys(page);
+    } else {
+        alert("Failed to delete key.");
+    }
+}
+
+// ==========================================
+// USER MANAGEMENT VIEW
+// ==========================================
+
+async function renderAdminUsersView(page) {
+    if (!canExecute()) {
+        navigateTo('/');
+        return;
+    }
+
+    app.innerHTML = `
+        <div class="page-container admin-page" style="max-width: 100%;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h1>Manage Users</h1>
+                <button class="btn" onclick="navigateTo('/admin')">&larr; Back to Admin</button>
+            </div>
+
+            <div style="overflow-x: auto;">
+                <table class="admin-table">
+                    <thead>
+                        <tr>
+                            <th>ID / Username</th>
+                            <th>Role</th>
+                            <th>Banned</th>
+                            <th>Admin Note</th>
+                            <th>Joined (Key Used)</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="usersTableBody">
+                        <tr><td colspan="6">Loading users...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <div id="usersPagination" class="pagination"></div>
+        </div>
+    `;
+
+    fetchAndRenderUsers(page);
+}
+
+async function fetchAndRenderUsers(page) {
+    try {
+        const res = await fetch(`/api/users?page=${page}`);
+        const users = await res.json();
+        const tbody = document.getElementById('usersTableBody');
+
+        if (users.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align: center;">No users found.</td></tr>`;
+        } else {
+            tbody.innerHTML = users.map(u => {
+                const joinedDate = new Date(u.creationDate).toLocaleDateString();
+                const keyUsed = u.inviteKeyUsed ? `<br><small style="color:var(--text-muted)">Key: ${u.inviteKeyUsed}</small>` : '';
+
+                return `
+                <tr>
+                    <td>
+                        <strong class="text-primary">${u.username}</strong><br>
+                        <small style="color: #888;">ID: ${u.id}</small>
+                    </td>
+                    <td>
+                        <select id="u-role-${u.id}" class="admin-input" style="margin: 0;">
+                            <option value="Read" ${u.role === 'Read' ? 'selected' : ''}>Read</option>
+                            <option value="Write" ${u.role === 'Write' ? 'selected' : ''}>Write</option>
+                            <option value="Execute" ${u.role === 'Execute' ? 'selected' : ''}>Execute</option>
+                        </select>
+                    </td>
+                    <td>
+                        <select id="u-banned-${u.id}" class="admin-input" style="margin: 0; background: ${u.banned ? '#421111' : '#111'};">
+                            <option value="false" ${!u.banned ? 'selected' : ''}>False</option>
+                            <option value="true" ${u.banned ? 'selected' : ''}>TRUE</option>
+                        </select>
+                    </td>
+                    <td>
+                        <input type="text" id="u-note-${u.id}" class="admin-input input-textarea" style="margin: 0; width: 100%; min-width: 150px;" value="${u.note || ''}" placeholder="Internal note...">
+                    </td>
+                    <td style="font-size: 0.85rem;">
+                        ${joinedDate}
+                        ${keyUsed}
+                    </td>
+                    <td>
+                        <button class="btn" style="background: #2a2; width: 100%;" onclick="saveUser(${u.id})">Save</button>
+                    </td>
+                </tr>
+            `}).join('');
+        }
+
+        const paginationDiv = document.getElementById('usersPagination');
+        let prevDisabled = page <= 1 ? 'disabled' : '';
+        let nextDisabled = users.length < 10 ? 'disabled' : '';
+
+        paginationDiv.innerHTML = `
+            <button class="page-btn" ${prevDisabled} onclick="navigateTo('/admin/users?page=${page - 1}')">Previous</button>
+            <span class="pagination-text">Page ${page}</span>
+            <button class="page-btn" ${nextDisabled} onclick="navigateTo('/admin/users?page=${page + 1}')">Next</button>
+        `;
+
+    } catch (e) {
+        alert("Failed to fetch users.");
+        console.error(e);
+    }
+}
+
+async function saveUser(id) {
+    const role = document.getElementById(`u-role-${id}`).value;
+    const bannedStr = document.getElementById(`u-banned-${id}`).value;
+    const note = document.getElementById(`u-note-${id}`).value;
+
+    const banned = (bannedStr === "true");
+
+    // Prevent accidental self-demotion
+    if (currentUser.username && id === currentUser.id && role !== 'Execute') {
+        if (!confirm("WARNING: You are about to remove your own Execute permissions! Are you sure?")) {
+            return;
+        }
+    }
+
+    const res = await fetch(`/api/users/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role, banned, note })
+    });
+
+    if (res.ok) {
+        // Subtle visual confirmation without a blocking alert
+        const btn = event.target;
+        const originalText = btn.innerText;
+        btn.innerText = "Saved!";
+        btn.style.background = "#181";
+        setTimeout(() => {
+            btn.innerText = originalText;
+            btn.style.background = "#2a2";
+
+            // Re-fetch to update background colors (like banned red tint)
+            const page = parseInt(new URLSearchParams(window.location.search).get('page')) || 1;
+            fetchAndRenderUsers(page);
+        }, 1000);
+    } else {
+        alert("Failed to update user.");
+    }
+}
+
+function submitEditAccount() {
+    const handle = document.getElementById('editAccHandle').value;
+    if (!handle) return alert("Target handle required.");
+
+    const body = {};
+    const dName = document.getElementById('editAccDisplay').value;
+    const status = document.getElementById('editAccStatus').value;
+    const prot = document.getElementById('editAccProtected').value;
+    const dl = document.getElementById('editAccDownload').value;
+    const safe = document.getElementById('editAccSafety').value;
+
+    if (dName) body.displayName = dName;
+    if (status) body.accountStatus = status;
+    if (prot !== "") body.isProtected = (prot === "true");
+    if (dl !== "") body.downloadStatus = (dl === "true");
+    if (safe) body.safetyRating = safe;
+
+    adminRequest('PATCH', `/api/accounts/${handle}`, body);
+}
+
+// ==========================================
+// MY PROFILE VIEW (/me)
+// ==========================================
+
+async function renderProfileView() {
+    if (!currentUser.loggedIn) {
+        navigateTo('/');
+        return;
+    }
+
+    app.innerHTML = `
+        <div class="page-container" style="max-width: 600px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h1>My Account</h1>
+                <span style="color: var(--text-muted);">Role: <strong style="color: var(--accent);">${currentUser.role}</strong></span>
+            </div>
+
+            <div class="admin-card">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="meUsername" class="form-input" placeholder="Display name and login name">
+                </div>
+                <div class="form-group">
+                    <label>Email (Optional)</label>
+                    <input type="email" id="meEmail" class="form-input" placeholder="Set this in case you need to be contacted">
+                </div>
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" id="mePassword" class="form-input" placeholder="Leave blank to keep current password">
+                </div>
+                <div class="form-group">
+                    <label>About Me</label>
+                    <textarea id="meAbout" class="form-input" rows="4" placeholder="Info about you (external sites, names, etc)"></textarea>
+                </div>
+
+                <div style="display: flex; gap: 10px; margin-top: 20px;">
+                    <button class="btn btn-primary" style="flex: 1;" onclick="saveProfile()">Save Changes</button>
+                    <button class="btn" style="background: #a22; border-color: #711;" onclick="deleteAccount()">Delete Account</button>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Fetch current details to populate form
+    try {
+        const res = await fetch('/api/me');
+        if (res.ok) {
+            const data = await res.json();
+            document.getElementById('meUsername').value = data.username || '';
+            document.getElementById('meEmail').value = data.email || '';
+            document.getElementById('meAbout').value = data.aboutMe || '';
+        }
+    } catch (e) {
+        console.error("Failed to fetch profile details", e);
+    }
+}
+
+async function saveProfile() {
+    const username = document.getElementById('meUsername').value;
+    const email = document.getElementById('meEmail').value;
+    const password = document.getElementById('mePassword').value;
+    const aboutMe = document.getElementById('meAbout').value;
+
+    const payload = { username, email, aboutMe };
+    if (password) payload.password = password;
+
+    const res = await fetch('/api/me', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (data.success) {
+        alert("Profile updated successfully!");
+        currentUser.username = data.username;
+        renderAuth(); // Update the top bar username visually
+        document.getElementById('mePassword').value = ''; // clear password field
+    } else {
+        alert(data.error || "Failed to update profile.");
+    }
+}
+
+async function deleteAccount() {
+    const confirm1 = confirm("Are you completely sure you want to delete your account? This action cannot be undone.");
+    if (!confirm1) return;
+
+    const confirm2 = prompt("Type 'DELETE' to confirm account termination:");
+    if (confirm2 !== 'DELETE') {
+        alert("Account deletion cancelled.");
+        return;
+    }
+
+    const res = await fetch('/api/me', { method: 'DELETE' });
+    if (res.ok) {
+        alert("Account deleted.");
+        currentUser = { loggedIn: false, username: null, role: 'Read' };
+        navigateTo('/');
+        location.reload();
+    } else {
+        alert("Failed to delete account.");
+    }
+}
+
+// Uses cookies automatically, no Auth Header needed!
+async function adminRequest(method, url, body) {
+    try {
+        const options = {
+            method: method,
+            headers: {}
+        };
+
+        if (body) {
+            options.headers['Content-Type'] = 'application/json';
+            options.body = JSON.stringify(body);
+        }
+
+        const res = await fetch(url, options);
+        const data = await res.json();
+
+        if (data.success) {
+            alert("Success: " + (data.message || JSON.stringify(data)));
+        } else {
+            alert("Error: " + (data.error || "Unknown error occurred"));
+        }
+    } catch (e) {
+        alert("Request Failed: " + e);
+    }
 }
 
 async function renderAllArtistsView() {
@@ -116,19 +782,21 @@ async function renderAllArtistsView() {
             return;
         }
 
-        container.innerHTML = artists.map(a => `
-            <div class="post-card" onclick="navigateTo('/artist/${encodeURIComponent(a.name)}')" style="padding: 15px; display: block; height: auto;">
+        container.innerHTML = artists.map(a => {
+            const url = `/artist/${encodeURIComponent(a.name)}`;
+            return `
+            <a href="${url}" class="post-card" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('${url}'); }" style="padding: 15px; display: block; height: auto; text-decoration: none; color: inherit;">
                 <h3 class="text-primary">${a.name}</h3>
                 <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 5px;">${a.description || 'No description provided.'}</p>
-            </div>
-        `).join('');
+            </a>
+        `}).join('');
     } catch (e) {
         document.getElementById('artistsList').innerHTML = '<p>Error loading artists.</p>';
     }
 }
 
 async function renderArtistView(name) {
-    const res = await fetch(`/api/artists/name/${name}`);
+    const res = await fetch(`/api/artists/slug/${name}`);
     const data = await res.json();
     app.innerHTML = `
         <div class="page-container">
@@ -141,13 +809,13 @@ async function renderArtistView(name) {
             <h3>Connected Accounts</h3>
             <div class="gallery">
                 ${data.accounts.map(acc => `
-                    <div class="post-card" onclick="navigateTo('/account/${acc.twitterId}')">
+                    <a href="/account/${acc.twitterId}" class="post-card" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('/account/${acc.twitterId}'); }" style="text-decoration: none; color: inherit;">
                         <div class="card-footer" style="height: 100%;">
                             <strong class="text-primary">@${acc.screenName}</strong><br>${acc.displayName}<br>
                             <small>Status: ${acc.accountStatus}</small><br>
                             <small>Safety Rating: ${acc.safetyRating}</small>
                         </div>
-                    </div>
+                    </a>
                 `).join('')}
             </div>
         </div>`;
@@ -163,6 +831,8 @@ async function renderAccountView(twitterId, page) {
     app.innerHTML = `
         <div class="account-container">
             <aside class="sidebar" id="sidebar">
+                <a href="javascript:void(0)" onclick="navigateToArtistById(${acc.artistId})" class="text-primary" style="display: inline-block; margin-bottom: 15px; font-weight: bold;">← View Artist</a>
+
                 <a href="https://x.com/${acc.screenName}" target="_blank"><h2>@${acc.screenName}</h2></a>
                 <p><strong>${acc.displayName}</strong></p>
                 <br>
@@ -187,16 +857,12 @@ async function renderAccountView(twitterId, page) {
 }
 
 async function renderPostDetail(postId) {
-    const res = await fetch(`/api/post/${postId}`);
+    const res = await fetch(`/api/posts/${postId}`);
     const post = await res.json();
     const columns = post.media.length > 1 ? 'repeat(2, auto)' : 'auto';
 
     app.innerHTML = `
     <div class="detail-view">
-        <div class="detail-header">
-            <a href="javascript:void(0)" onclick="history.back()" class="text-primary">← Back</a>
-        </div>
-
         <div class="detail-content" style="grid-template-columns: ${columns};">
             ${post.media.map(m => {
         const filename = m.localPath.split(/[\\/]/).pop();
@@ -214,6 +880,9 @@ async function renderPostDetail(postId) {
         <div class="detail-footer">
             <div class="detail-footer-inner">
                 <div style="flex: 1; min-width: 0;">
+                    <div style="margin-bottom: 8px;">
+                        <a href="javascript:void(0)" onclick="navigateTo('/account/${post.twitterId}')" class="text-primary" style="font-size: 1.1rem; font-weight: bold;">← View Account</a>
+                    </div>
                     <div class="detail-meta">
                         <span>Post ID: ${post.postId}</span><span>•</span>
                         <span>${new Date(post.postDate * 1000).toLocaleString()}</span>
@@ -237,7 +906,7 @@ async function renderMediaDetail(mediaId) {
     const filename = m.localPath.split(/[\\/]/).pop();
     const src = `/images/${m.contentRating}/${m.safetyRating}/${filename}`;
 
-    let captionContent = !adminKey
+    let captionContent = !canWrite()
         ? `<div class="detail-text" style="text-align: center; color: #ccc;">${m.caption || ''}</div>`
         : `
             <div class="caption-editor">
@@ -256,13 +925,12 @@ async function renderMediaDetail(mediaId) {
             <div class="detail-footer">
                 <div class="detail-footer-inner">
                     <div style="width: 250px; min-width: 0;">
-                        <div class="detail-meta">
-                            <span>Media ID: ${m.id}</span><span>•</span><span>${m.mediaType}</span>
-                        </div>
                         <div style="margin-bottom: 6px;">
                             <a href="javascript:void(0)" onclick="navigateTo('/post/${m.postId}')" class="text-primary" style="font-size: 1rem; font-weight: bold;">← View Post</a>
                         </div>
-                        <a href="https://x.com/i/status/${m.postId}" target="_blank" style="color: var(--text-muted); font-size: 0.85rem;">Original Link ↗</a>
+                        <div class="detail-meta">
+                            <span>Media ID: ${m.id}</span><span>•</span><span>${m.mediaType}</span>
+                        </div>
                     </div>
 
                     <div style="flex: 1; display: flex; justify-content: center;">
@@ -293,16 +961,15 @@ async function loadPage(twitterId, pageNum) {
     isLoading = true;
     const offset = (pageNum - 1) * LIMIT;
 
-    // Apply Filters & Sorting
-    const cParams = selectedFilters.content.map(c => `c=${encodeURIComponent(c)}`).join('&');
-    const sParams = selectedFilters.safety.map(s => `s=${encodeURIComponent(s)}`).join('&');
+    const cParams = selectedFilters.content.map(c => `content=${encodeURIComponent(c)}`).join('&');
+    const sParams = selectedFilters.safety.map(s => `safety=${encodeURIComponent(s)}`).join('&');
     const sortParam = `sort=${selectedFilters.sort}`;
 
     const filterQuery = [cParams, sParams, sortParam].filter(x => x !== '').join('&');
 
     const url = twitterId
-        ? `/api/posts/${twitterId}?limit=${LIMIT}&offset=${offset}&${filterQuery}`
-        : `/api/posts/global?limit=${LIMIT}&offset=${offset}&${filterQuery}`;
+        ? `/api/accounts/${twitterId}/posts?limit=${LIMIT}&offset=${offset}&${filterQuery}`
+        : `/api/posts?limit=${LIMIT}&offset=${offset}&${filterQuery}`;
 
     const res = await fetch(url);
     const posts = await res.json();
@@ -324,10 +991,21 @@ function renderPosts(posts, pageNum, twitterId) {
         gallery.innerHTML = '<p style="padding: 20px;">No more posts available.</p>';
     } else {
         posts.forEach(post => {
-            const card = document.createElement('div');
+            const card = document.createElement('a');
             card.className = 'post-card';
+            card.href = `/post/${post.postId}`;
+            card.style.color = 'inherit';
+            card.style.textDecoration = 'none';
+
             card.addEventListener('click', function(e) {
-                if (!e.target.closest('select')) navigateTo(`/post/${post.postId}`);
+                if (e.target.closest('select')) {
+                    e.preventDefault();
+                    return;
+                }
+                if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                    e.preventDefault();
+                    navigateTo(`/post/${post.postId}`);
+                }
             });
 
             let mediaGrid = '';
@@ -336,13 +1014,18 @@ function renderPosts(posts, pageNum, twitterId) {
                 let rowHtml = '';
 
                 rowMedia.forEach((m) => {
-                    const src = `/images/${m.contentRating}/${m.safetyRating}/${m.localPath.split(/[\\/]/).pop()}`;
+                    const localFilename = m.localPath.split(/[\\/]/).pop();
+                    const fullSrc = `/images/${m.contentRating}/${m.safetyRating}/${localFilename}`;
+                    const thumbSrc = `/api/media/${m.id}/thumbnail`;
 
                     rowHtml += `
                         <div class="card-media-item">
-                            ${m.mediaType.includes('mp4') ? `<video src="${src}" controls></video>` : `<img src="${m.originalUrl.replace("orig","small")}" />`}
+                            ${m.mediaType.includes('mp4') ?
+                                `<video src="${fullSrc}" controls></video>` :
+                                `<img src="${thumbSrc}" loading="lazy" />`
+                            }
                             <div class="card-overlay">
-                                ${adminKey ? `
+                                ${canWrite() ? `
                                     <select onchange="updateRating('${m.id}', 'media', 'Content', this.value)" onclick="event.stopPropagation();">
                                         ${generateOptionsHtml('Content', m.contentRating)}
                                     </select>
@@ -364,7 +1047,7 @@ function renderPosts(posts, pageNum, twitterId) {
                         <div class="card-date">${new Date(post.postDate * 1000).toLocaleDateString()}</div>
                     </div>
                     <div class="card-caption">${post.postText || ''}</div>
-                    ${adminKey ? `
+                    ${canWrite() ? `
                         <div class="card-rating">
                             <span>Post Rating:</span>
                             <select onchange="updateRating('${post.postId}', 'post', 'Content', this.value)" onclick="event.stopPropagation();">
@@ -410,7 +1093,6 @@ function populateFilterMenu() {
             <option value="random" ${selectedFilters.sort === 'random' ? 'selected' : ''}>Randomize</option>
         </select>
     </div>
-
     <div class="filter-group">
         <h4>Content Ratings</h4>
         <small style="color:var(--text-muted); display:block; margin-bottom: 6px;">Leave all unchecked for ANY</small>
@@ -450,29 +1132,26 @@ function applyFilters() {
     selectedFilters.content = Array.from(cBoxes).map(cb => cb.value);
     selectedFilters.safety = Array.from(sBoxes).map(cb => cb.value);
 
-    // Save configuration to localStorage
     localStorage.setItem('sandstar_filters', JSON.stringify(selectedFilters));
 
-    pageCache = {}; // Clear cache so we retrieve new filtered items
+    pageCache = {};
     toggleFilters();
-    router(); // Re-render page
+    router();
 }
 
 // --- HELPERS ---
 
 function generateOptionsHtml(ratingType, currentValue) {
     const options = ratingType === 'Content' ? validRatings.content : validRatings.safety;
-    // Don't let users assign 'Waiting' to posts manually
     const selectableOptions = options.filter(opt => opt !== 'Waiting');
     if (currentValue === 'Waiting' && !selectableOptions.includes('Waiting')) {
         selectableOptions.unshift('Waiting');
     }
-
     return selectableOptions.map(opt => `<option value="${opt}" ${currentValue === opt ? 'selected' : ''}>${opt}</option>`).join('');
 }
 
 function renderRatingControls(id, type, currentContent, currentSafety) {
-    if (!adminKey) return `<div class="controls">Content: ${currentContent}&nbsp; Safety: ${currentSafety}</div>`;
+    if (!canWrite()) return `<div class="controls">Content: ${currentContent}&nbsp; Safety: ${currentSafety}</div>`;
     return `
         <div class="controls">
             Content: <select onchange="updateRating('${id}', '${type}', 'Content', this.value)">
@@ -486,19 +1165,36 @@ function renderRatingControls(id, type, currentContent, currentSafety) {
 
 async function updateCaption(mediaId) {
     const captionText = document.getElementById('caption-input').value;
-    const res = await fetch(`/api/media/caption?mediaId=${mediaId}&caption=${encodeURIComponent(captionText)}`, {
-        method: 'POST', headers: { 'Authorization': adminKey }
+
+    const res = await fetch(`/api/media/${mediaId}`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ caption: captionText })
     });
-    if (res.ok) alert("Caption updated!");
-    else alert("Failed to update caption. Are you logged in?");
+
+    const data = await res.json();
+    if (data.success) {
+        alert("Caption updated!");
+    } else {
+        alert("Failed to update caption: " + (data.error || "Are you logged in?"));
+    }
 }
 
 async function updateRating(id, targetType, ratingType, value) {
-    const endpoint = targetType === 'post' ? '/api/rate/post' : '/api/rate/media';
-    const paramName = targetType === 'post' ? 'postId' : 'mediaId';
+    const endpoint = targetType === 'post' ? `/api/posts/${id}` : `/api/media/${id}`;
 
-    await fetch(`${endpoint}?${paramName}=${id}&type=${ratingType}&value=${value}`, {
-        method: 'POST', headers: { 'Authorization': adminKey }
+    const body = {};
+    if (ratingType === 'Content') body.contentRating = value;
+    if (ratingType === 'Safety') body.safetyRating = value;
+
+    await fetch(endpoint, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body)
     });
 
     Object.values(pageCache).forEach(pageData => {
@@ -528,6 +1224,20 @@ function navigateTo(url) {
     router();
 }
 
+async function navigateToArtistById(artistId) {
+    try {
+        const res = await fetch(`/api/artists/${artistId}`);
+        const data = await res.json();
+        if (data && data.name) {
+            navigateTo(`/artist/${encodeURIComponent(data.name)}`);
+        } else {
+            alert("Artist not found.");
+        }
+    } catch (e) {
+        console.error("Failed to route to artist", e);
+    }
+}
+
 // --- SEARCH ENGINE ---
 
 searchBar.addEventListener('input', () => {
@@ -543,8 +1253,8 @@ searchBar.addEventListener('input', () => {
 async function performSearch(query) {
     try {
         const [artistRes, accountRes] = await Promise.all([
-            fetch(`/api/artists/search?q=${encodeURIComponent(query)}`),
-            fetch(`/api/accounts/search?q=${encodeURIComponent(query)}`)
+            fetch(`/api/artists?q=${encodeURIComponent(query)}`),
+            fetch(`/api/accounts?q=${encodeURIComponent(query)}`)
         ]);
         renderSearchResults(await artistRes.json(), await accountRes.json());
     } catch (err) {
@@ -574,7 +1284,6 @@ function renderSearchResults(artists, accounts) {
             const div = document.createElement('div');
             div.className = 'search-item';
             div.innerText = artist.name;
-            // Also added encodeURIComponent here to support artist names with spaces/special characters
             div.onclick = () => { navigateTo(`/artist/${encodeURIComponent(artist.name)}`); closeSearch(); };
             searchResults.appendChild(div);
         });
@@ -625,18 +1334,27 @@ window.onpopstate = () => {
 // --- INITIALIZE APP ---
 async function initApp() {
     try {
+        // 1. Check user login status automatically
+        const userRes = await fetch('/api/auth/me');
+        if (userRes.ok) {
+            const userData = await userRes.json();
+            if (userData.success) {
+                currentUser = { loggedIn: true, username: userData.username, role: userData.role };
+            }
+        }
+
+        // 2. Load Configs
         const res = await fetch('/api/config');
         if (res.ok) {
             const data = await res.json();
-            // Attach "Waiting" visually for filtering options
             validRatings.content = [...data.content, "Waiting"];
             validRatings.safety = [...data.safety, "Waiting"];
         }
     } catch (err) {
-        console.error("Failed to load config endpoints", err);
+        console.error("Failed to load init endpoints", err);
     }
 
-    // Attempt to load filters from persistence
+    // 3. Set up filters
     const savedFilters = localStorage.getItem('sandstar_filters');
     if (savedFilters) {
         try {
@@ -644,13 +1362,10 @@ async function initApp() {
             selectedFilters = { ...selectedFilters, ...parsed };
         } catch(e) {}
     } else {
-        // Fallback default state
-        if (adminKey) {
-            // Admins get everything checked by default (or empty to mean all)
+        if (canExecute()) {
             selectedFilters.content = [];
             selectedFilters.safety = [];
         } else {
-            // Guests only get KF and Safe by default
             selectedFilters.content = ['KF'];
             selectedFilters.safety = ['Safe'];
         }

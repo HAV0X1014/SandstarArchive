@@ -282,9 +282,10 @@ public class TwitterScraper {
      * @param startPostId The post ID to begin scraping from (going backward).
      * @throws InterruptedException
      */
-    public static void scrapeFromPostId(TwitterAccount account, String startPostId) throws InterruptedException {
+    public static void scrapeFromPostId(TwitterAccount account, String startPostId, String stopPostId) throws InterruptedException {
         boolean stopReached = false;
-        boolean foundStartPost = false;
+        // If startPostId is null, we can start capturing immediately without skipping
+        boolean foundStartPost = (startPostId == null || startPostId.trim().isEmpty());
         account.lastScrapedId = null; //force set to null to not stop immediately
         try {
             String cursor = null;
@@ -321,36 +322,40 @@ public class TwitterScraper {
                             if (itemsToProcess != null && itemsToProcess.length() > 0) {
                                 itemsFoundInThisRequest = true;
 
-                                if (!foundStartPost) {
-                                    // Look for the startPostId in this chunk
-                                    JSONArray subItems = new JSONArray();
-                                    boolean capturing = false;
+                                JSONArray subItems = new JSONArray();
 
-                                    for (int j = 0; j < itemsToProcess.length(); j++) {
-                                        JSONObject item = itemsToProcess.getJSONObject(j);
+                                for (int j = 0; j < itemsToProcess.length(); j++) {
+                                    JSONObject item = itemsToProcess.getJSONObject(j);
+                                    String itemId = item.has("id") ? item.getString("id") : null;
 
-                                        // Once we see the target ID, start adding it and everything after it to be processed
-                                        if (!capturing && item.has("id") && item.getString("id").equals(startPostId)) {
-                                            capturing = true;
-                                            foundStartPost = true;
-                                        }
-
-                                        if (capturing) {
-                                            subItems.put(item);
-                                        }
+                                    // Check if we hit the stopPostId first
+                                    if (stopPostId != null && stopPostId.equals(itemId)) {
+                                        stopReached = true;
+                                        break; // Stop collecting further items
                                     }
 
-                                    // Process the subset of items starting from our target post
-                                    if (foundStartPost && subItems.length() > 0) {
-                                        stopReached = processItems(subItems, account);
+                                    // Look for the startPostId in this chunk if we haven't found it yet
+                                    if (!foundStartPost && itemId != null && itemId.equals(startPostId)) {
+                                        foundStartPost = true;
                                     }
-                                } else {
-                                    // We've already found the starting point in a previous iteration, process all items normally
-                                    stopReached = processItems(itemsToProcess, account);
+
+                                    // Once we see the target start ID (or if it started as true), capture to be processed
+                                    if (foundStartPost) {
+                                        subItems.put(item);
+                                    }
+                                }
+
+                                // Process the subset of accumulated items
+                                if (subItems.length() > 0) {
+                                    boolean processStop = processItems(subItems, account);
+                                    if (processStop) {
+                                        stopReached = true;
+                                    }
                                 }
 
                                 if (stopReached) break;
                             }
+
                             // 2. HANDLE CURSOR
                             if (entry.has("cursorType") && entry.getString("cursorType").equals("BOTTOM")) {
                                 nextCursor = entry.getString("value");
@@ -363,7 +368,7 @@ public class TwitterScraper {
                     cursor = nextCursor;
                 }
                 if (!itemsFoundInThisRequest || stopReached) {
-                    System.out.println(stopReached ? "Reached previously scraped post. Stopping." : "No more items found. Ending scrape.");
+                    System.out.println(stopReached ? "Reached stopPostId or previously scraped post. Stopping." : "No more items found. Ending scrape.");
                     break;
                 }
                 System.out.println("Next scrape preparation complete...\n");

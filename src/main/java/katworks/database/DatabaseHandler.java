@@ -7,7 +7,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
+import java.security.SecureRandom;
 import java.sql.*;
+import java.time.Clock;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -16,6 +19,8 @@ import static katworks.Main.writeQueue;
 
 public class DatabaseHandler {
     private static final String dbUrl = "jdbc:sqlite:" + config.databasePath;
+    private static final String ALPHANUMERIC = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private static Connection getConnection() throws SQLException {
         SQLiteConfig sqliteConfig = new SQLiteConfig();
@@ -70,6 +75,20 @@ public class DatabaseHandler {
         });
     }
 
+    public static void setLastScrapedIdByName(String screenname, String lastScrapedId) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "UPDATE twitter_accounts SET last_scraped_id = ? WHERE screen_name = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, lastScrapedId);
+                ps.setString(2, screenname);
+
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
     /**
      * Sets the Discord thread ID for the specified twitter account ID.
      * @param twitterId
@@ -92,12 +111,9 @@ public class DatabaseHandler {
 
     /**
      * Set the account status of an account by screen name. Status must be "Active", "Deleted", "Suspended"
-     * @param screenName
-     * @param status I can't be bothered to make an enum for this.
-     * @return
      */
     public static void setAccountStatus(String screenName, String status) {
-        if (status.equals("Active") || status.equals("Deleted") || status.equals("Suspended")) {
+        if (status.equals(AccountStatus.ACTIVE) || status.equals(AccountStatus.DELETED) || status.equals(AccountStatus.SUSPENDED)) {
             writeQueue.runAsyncWrite(conn -> {
                 String sql = "UPDATE twitter_accounts SET account_status = ? WHERE screen_name = ?";
                 try (PreparedStatement ps = conn.prepareStatement(sql)) {
@@ -394,65 +410,88 @@ public class DatabaseHandler {
      * @return
      */
     public static String registerAccount(String twitterId, String screenName, String displayName, String artistName, boolean downloadStatus, String accountSafetyRating) {
+        // 1. Input Sanitation & Validation
+        if (twitterId == null || twitterId.isBlank()) return "Error: Twitter ID is required.";
+        if (screenName == null || screenName.isBlank()) return "Error: Screen name is required.";
+        if (artistName == null || artistName.isBlank()) return "Error: Artist name is required.";
+        if (!config.safetyRatings.contains(accountSafetyRating) && !accountSafetyRating.equals("Waiting")) {
+            return "Error: Invalid safety rating.";
+        }
+
+        twitterId = twitterId.trim();
+        screenName = screenName.trim();
+        artistName = artistName.trim();
+        if (displayName != null) displayName = displayName.trim();
+
         String responseMessage = "";
+
         try (Connection connection = getConnection()) {
-            connection.setAutoCommit(false);
-            //check if account already exists
-            String checkSql = "SELECT twitter_id FROM twitter_accounts WHERE twitter_id = ?";
-            try (PreparedStatement checkStmt = connection.prepareStatement(checkSql)) {
-                checkStmt.setString(1, twitterId);
-                if (checkStmt.executeQuery().next()) {
-                    return "Error: This Twitter account is already in the database.";
-                }
-            }
-            // 2. Resolve the Artist ID
-            //check if an artist with the same name exists already
-            int artistId = -1;
-            String artistCheckSql = "SELECT id FROM artists WHERE name = ?";
-            try (PreparedStatement artistStmt = connection.prepareStatement(artistCheckSql)) {
-                artistStmt.setString(1, artistName);
-                ResultSet rs = artistStmt.executeQuery();
-                if (rs.next()) {
-                    artistId = rs.getInt("id");
-                    responseMessage += "Found existing artist '" + artistName + "'. Linking account... ";
-                }
-            }
+            connection.setAutoCommit(false); // Start transaction
 
-            // 3. Create Artist if they don't exist
-            if (artistId == -1) {
-                String createArtistSql = "INSERT INTO artists (name, description) VALUES (?, ?)";
-                try (PreparedStatement createStmt = connection.prepareStatement(createArtistSql, Statement.RETURN_GENERATED_KEYS)) {
-                    createStmt.setString(1, artistName);
-                    createStmt.setString(2, "Added via Discord command");
-                    createStmt.executeUpdate();
-
-                    ResultSet generatedKeys = createStmt.getGeneratedKeys();
-                    if (generatedKeys.next()) {
-                        artistId = generatedKeys.getInt(1);
-                        responseMessage += "Created new artist '" + artistName + "'. ";
-                    } else {
-                        throw new SQLException("Failed to create artist, no ID obtained.");
+            try {
+                // 2. Check if account already exists
+                String checkSql = "SELECT twitter_id FROM twitter_accounts WHERE twitter_id = ?";
+                try (PreparedStatement checkStmt = connection.prepareStatement(checkSql)) {
+                    checkStmt.setString(1, twitterId);
+                    if (checkStmt.executeQuery().next()) {
+                        return "Error: This Twitter account is already in the database.";
                     }
                 }
-            }
 
-            // 4. Create the Twitter Account Entry
-            String insertAccountSql =
-                    "INSERT INTO twitter_accounts " +
-                    "(twitter_id, artist_id, screen_name, display_name, account_status, download_status, safety_rating) " +
-                    "VALUES (?, ?, ?, ?, 'Active', ?, ?)";
+                // 3. Resolve the Artist ID
+                int artistId = -1;
+                String artistCheckSql = "SELECT id FROM artists WHERE name = ?";
+                try (PreparedStatement artistStmt = connection.prepareStatement(artistCheckSql)) {
+                    artistStmt.setString(1, artistName);
+                    ResultSet rs = artistStmt.executeQuery();
+                    if (rs.next()) {
+                        artistId = rs.getInt("id");
+                        responseMessage += "Found existing artist '" + artistName + "'. Linking account... ";
+                    }
+                }
 
-            try (PreparedStatement accStmt = connection.prepareStatement(insertAccountSql)) {
-                accStmt.setString(1, twitterId);
-                accStmt.setInt(2, artistId);
-                accStmt.setString(3, screenName);
-                accStmt.setString(4, displayName);
-                accStmt.setBoolean(5,downloadStatus);
-                accStmt.setString(6,accountSafetyRating);
-                accStmt.executeUpdate();
+                // 4. Create Artist if they don't exist
+                if (artistId == -1) {
+                    String createArtistSql = "INSERT INTO artists (name, description) VALUES (?, ?)";
+                    try (PreparedStatement createStmt = connection.prepareStatement(createArtistSql, Statement.RETURN_GENERATED_KEYS)) {
+                        createStmt.setString(1, artistName);
+                        createStmt.setString(2, "Added via registration");
+                        createStmt.executeUpdate();
+
+                        ResultSet generatedKeys = createStmt.getGeneratedKeys();
+                        if (generatedKeys.next()) {
+                            artistId = generatedKeys.getInt(1);
+                            responseMessage += "Created new artist '" + artistName + "'. ";
+                        } else {
+                            throw new SQLException("Failed to create artist, no ID obtained.");
+                        }
+                    }
+                }
+
+                // 5. Create the Twitter Account Entry
+                String insertAccountSql =
+                        "INSERT INTO twitter_accounts " +
+                                "(twitter_id, artist_id, screen_name, display_name, account_status, download_status, safety_rating) " +
+                                "VALUES (?, ?, ?, ?, 'Active', ?, ?)";
+
+                try (PreparedStatement accStmt = connection.prepareStatement(insertAccountSql)) {
+                    accStmt.setString(1, twitterId);
+                    accStmt.setInt(2, artistId);
+                    accStmt.setString(3, screenName);
+                    accStmt.setString(4, displayName);
+                    accStmt.setBoolean(5, downloadStatus);
+                    accStmt.setString(6, accountSafetyRating);
+                    accStmt.executeUpdate();
+                }
+
+                connection.commit(); // COMMIT ONLY IF EVERYTHING SUCCEEDS
+                return responseMessage + "Account registered successfully.";
+
+            } catch (SQLException e) {
+                connection.rollback(); // PREVENTS DATABASE LOCKS
+                e.printStackTrace();
+                return "Error: Database failure during account registration.";
             }
-            connection.commit();
-            return responseMessage;
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
@@ -567,12 +606,43 @@ public class DatabaseHandler {
                             "    FOREIGN KEY (duplicate_of) REFERENCES media(id) ON DELETE SET NULL\n" +
                             ");");
             statement.execute(
+                    "CREATE TABLE IF NOT EXISTS users(\n" +
+                            "   id INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
+                            "   username TEXT UNIQUE COLLATE NOCASE NOT NULL,\n" +
+                            "   email TEXT UNIQUE COLLATE NOCASE,\n" + //email is optional
+                            "   password_hash TEXT NOT NULL,\n" +
+                            "   role TEXT NOT NULL DEFAULT 'Read',\n" +
+                            "   restriction_level TEXT DEFAULT 'None',\n" +
+                            "   banned INTEGER NOT NULL DEFAULT 0,\n" +
+                            "   invite_key_used TEXT,\n" +
+                            "   note TEXT,\n" +
+                            "   about_me TEXT,\n" +
+                            "   creation_date INTEGER NOT NULL\n" +
+                            ");");
+            statement.execute(
+                    "CREATE TABLE IF NOT EXISTS invite_keys(\n" +
+                            "   id INTEGER PRIMARY KEY AUTOINCREMENT,\n" +
+                            "   invite_key TEXT UNIQUE NOT NULL,\n" +
+                            "   grant_role TEXT NOT NULL DEFAULT 'Read',\n" +
+                            "   max_uses INTEGER NOT NULL DEFAULT 1,\n" + //only 1 use by default
+                            "   times_used INTEGER NOT NULL DEFAULT 0,\n" +
+                            "   expires_at INTEGER,\n" + //-1 never expires
+                            "   created_by_user_id INTEGER,\n" +
+                            "   creation_date INTEGER NOT NULL,\n" +
+                            "   FOREIGN KEY (created_by_user_id) REFERENCES users(id)\n" +
+                            ");");
+            statement.execute(
                     "CREATE INDEX IF NOT EXISTS idx_post_twitter_id ON posts(twitter_id);\n" +
                             "CREATE INDEX IF NOT EXISTS idx_media_post_id ON media(post_id);\n" +
                             "CREATE INDEX IF NOT EXISTS idx_media_data_hash ON media(data_hash);\n" +
-                            "CREATE INDEX IF NOT EXISTS idx_media_p_hash ON media(perceptual_hash);");
+                            "CREATE INDEX IF NOT EXISTS idx_media_p_hash ON media(perceptual_hash" +
+                            ");");
 
-            System.out.println("DATABASE CREATED!");
+            InviteKey initialKey = generateKey(Permission.EXECUTE,2,-1,null);
+
+            System.out.println("DATABASE CREATED! You now need to use the web server to register your account.\n" +
+                    "Your registration key is [" + initialKey.inviteKey + "]. This key has 2 uses, and never expires.\n" +
+                    "It will grant you Execute permissions to manage your archive.");
         } catch (SQLException e) {
             System.out.println("Database creation failed. Check if .db file was created, delete it, and try again.");
             throw new RuntimeException(e);
@@ -883,7 +953,7 @@ public class DatabaseHandler {
         return results;
     }
 
-    public static ArtistDetails getArtistDetails(int artistId) {
+    public static ArtistDetails getArtistDetailsById(int artistId) {
         ArtistDetails details = new ArtistDetails();
         try (Connection conn = getConnection()) {
             // 1. Get Artist
@@ -1044,8 +1114,6 @@ public class DatabaseHandler {
         return post;
     }
 
-    // Update these two methods in DatabaseHandler.java
-
     public static ArtistDetails getArtistDetailsByName(String name) {
         int id = -1;
         try (Connection conn = getConnection();
@@ -1055,7 +1123,7 @@ public class DatabaseHandler {
             if (rs.next()) id = rs.getInt("id");
         } catch (SQLException e) { throw new RuntimeException(e); }
 
-        return id != -1 ? getArtistDetails(id) : null;
+        return id != -1 ? getArtistDetailsById(id) : null;
     }
 
     public static List<TwitterPost> getGlobalPostsPaged(int limit, int offset, List<String> contentFilters, List<String> safetyFilters, String sort) {
@@ -1175,21 +1243,33 @@ public class DatabaseHandler {
      * @return
      */
     public static String addAlias(String artistName, String newAliasName, String safetyRating) {
-        if (!config.safetyRatings.contains(safetyRating) && !safetyRating.equals("Waiting")) return "Invalid safety rating.";
-        ArtistDetails artist = getArtistDetailsByName(artistName);
-        writeQueue.runAsyncWrite(conn -> {
-            String sql = "INSERT INTO aliases (artist_id, alias_name, safety_rating) VALUES (?, ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(sql)) {
-                ps.setInt(1,artist.id);
-                ps.setString(2,newAliasName);
-                ps.setString(3,safetyRating);
+        if (artistName == null || artistName.isBlank()) return "Error: Artist name is required.";
+        if (newAliasName == null || newAliasName.isBlank()) return "Error: Alias name cannot be blank.";
+        if (!config.safetyRatings.contains(safetyRating) && !safetyRating.equals("Waiting")) return "Error: Invalid safety rating.";
 
-                ps.executeUpdate();
-            } catch (SQLException e) {
-                throw new RuntimeException(e);
+        newAliasName = newAliasName.trim();
+        artistName = artistName.trim();
+
+        ArtistDetails artist = getArtistDetailsByName(artistName);
+        if (artist == null) {
+            return "Error: Artist '" + artistName + "' not found.";
+        }
+
+        // Run synchronously so we can return the actual result
+        String sql = "INSERT INTO aliases (artist_id, alias_name, safety_rating) VALUES (?, ?, ?)";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, artist.id);
+            ps.setString(2, newAliasName);
+            ps.setString(3, safetyRating);
+            ps.executeUpdate();
+            return "Added alias name '" + newAliasName  + "' for artist '" + artistName + "'.";
+        } catch (SQLException e) {
+            if (e.getMessage().toLowerCase().contains("unique")) {
+                return "Error: This alias already exists.";
             }
-        });
-        return "Added alias name " + newAliasName  + " for artist " + artistName + ".";
+            e.printStackTrace();
+            return "Error: Failed to save alias to the database.";
+        }
     }
 
     public static List<Artist> getAllArtists() {
@@ -1221,5 +1301,333 @@ public class DatabaseHandler {
                 throw new RuntimeException(e);
             }
         });
+    }
+
+    /**
+     * Gets a user by EITHER their username or their email. Used for logging in (returns hashed password).
+     */
+    public static ArchiveUser getUserByIdentifier(String identifier) {
+        String sql = "SELECT * FROM users WHERE username = ? OR email = ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, identifier);
+            ps.setString(2, identifier);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    ArchiveUser u = new ArchiveUser();
+                    u.id = rs.getInt("id");
+                    u.username = rs.getString("username");
+                    u.email = rs.getString("email");
+                    u.passwordHash = rs.getString("password_hash");
+                    u.role = rs.getString("role");
+                    u.restrictionLevel = rs.getString("restriction_level");
+                    u.banned = rs.getBoolean("banned");
+                    return u;
+                }
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return null;
+    }
+
+    /**
+     * Handles completely registering a user, checking invite keys, and hashing the password.
+     */
+    public static String registerUser(String username, String email, String rawPassword, String inviteKeyStr) {
+        // 1. Strict Sanitation
+        if (inviteKeyStr == null || inviteKeyStr.isBlank()) return "Error: An invite key is required to register.";
+        if (username == null || username.isBlank()) return "Error: Username cannot be empty.";
+        if (rawPassword == null || rawPassword.isBlank()) return "Error: Password cannot be empty.";
+
+        username = username.trim();
+        if (email != null) email = email.trim();
+        inviteKeyStr = inviteKeyStr.trim();
+
+        try (Connection conn = getConnection()) {
+            conn.setAutoCommit(false); // Start transaction
+
+            try {
+                String assignedRole;
+
+                // 2. Validate Invite Key
+                String keySql = "SELECT id, max_uses, times_used, expires_at, grant_role FROM invite_keys WHERE invite_key = ?";
+                try (PreparedStatement ps = conn.prepareStatement(keySql)) {
+                    ps.setString(1, inviteKeyStr);
+                    ResultSet rs = ps.executeQuery();
+
+                    if (!rs.next()) return "Error: Invalid invite key.";
+
+                    int id = rs.getInt("id");
+                    int maxUses = rs.getInt("max_uses");
+                    int timesUsed = rs.getInt("times_used");
+                    long expiresAt = rs.getLong("expires_at");
+
+                    if (maxUses != -1 && timesUsed >= maxUses) return "Error: Invite key has no uses left.";
+                    if (expiresAt != -1 && System.currentTimeMillis() > expiresAt) return "Error: Invite key has expired.";
+
+                    assignedRole = rs.getString("grant_role");
+
+                    // Increment key usage
+                    try (PreparedStatement updateKey = conn.prepareStatement("UPDATE invite_keys SET times_used = times_used + 1 WHERE id = ?")) {
+                        updateKey.setInt(1, id);
+                        updateKey.executeUpdate();
+                    }
+                }
+
+                // 3. Hash Password and Insert User
+                String hashedPassword = org.mindrot.jbcrypt.BCrypt.hashpw(rawPassword, org.mindrot.jbcrypt.BCrypt.gensalt(12));
+                String insertUserSql = "INSERT INTO users (username, email, password_hash, role, invite_key_used, creation_date) VALUES (?, ?, ?, ?, ?, ?)";
+
+                try (PreparedStatement ps = conn.prepareStatement(insertUserSql)) {
+                    ps.setString(1, username);
+                    if (email == null || email.isEmpty()) ps.setNull(2, java.sql.Types.VARCHAR);
+                    else ps.setString(2, email);
+
+                    ps.setString(3, hashedPassword);
+                    ps.setString(4, assignedRole);
+                    ps.setString(5, inviteKeyStr);
+                    ps.setLong(6, System.currentTimeMillis());
+
+                    ps.executeUpdate();
+                }
+
+                conn.commit();
+                return "Success";
+
+            } catch (SQLException e) {
+                conn.rollback(); // Undo invite key increment if user creation fails
+                if (e.getMessage().toLowerCase().contains("unique")) {
+                    return "Error: Username or Email is already taken.";
+                }
+                e.printStackTrace();
+                return "Error: Database failure during user registration.";
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    /**
+     * Generate a new invite key with the specified values.
+     */
+    public static InviteKey generateKey(String grantRole, int maxUses, long expiresAt, Integer creatorUserId) {
+        if (grantRole.equals(Permission.READ) || grantRole.equals(Permission.WRITE) || grantRole.equals(Permission.EXECUTE)) {
+            if (maxUses == 0) maxUses = -1;
+            if (expiresAt == 0) expiresAt = -1;
+
+            InviteKey newKey = new InviteKey();
+            newKey.grantRole = grantRole;
+            newKey.maxUses = maxUses;
+            newKey.expiresAt = expiresAt;
+            newKey.createdByUserId = (creatorUserId != null) ? creatorUserId : 0; // 0 represents System internally
+            newKey.creationDate = Instant.now(Clock.systemUTC()).getEpochSecond();
+
+            // 1. Generate the 7-character string
+            StringBuilder sb = new StringBuilder(7);
+            for (int i = 0; i < 7; i++) {
+                sb.append(ALPHANUMERIC.charAt(RANDOM.nextInt(ALPHANUMERIC.length())));
+            }
+            newKey.inviteKey = sb.toString();
+
+            // 2. Insert into the database
+            writeQueue.runAsyncWrite(conn -> {
+                String sql = "INSERT INTO invite_keys (invite_key, grant_role, max_uses, expires_at, created_by_user_id, creation_date) VALUES (?, ?, ?, ?, ?, ?)";
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setString(1, newKey.inviteKey);
+                    ps.setString(2, newKey.grantRole);
+                    ps.setInt(3, newKey.maxUses);
+                    ps.setLong(4, newKey.expiresAt);
+
+                    // Prevent Foreign Key crash by inserting literal NULL if no user exists
+                    if (creatorUserId == null) {
+                        ps.setNull(5, java.sql.Types.INTEGER);
+                    } else {
+                        ps.setInt(5, creatorUserId);
+                    }
+
+                    ps.setLong(6, newKey.creationDate);
+                    ps.executeUpdate();
+                } catch (SQLException e) {
+                    throw new RuntimeException(e);
+                }
+            });
+            return newKey;
+        } else {
+            System.err.println("Invalid role for invite key creation. No key generated.");
+            return null;
+        }
+    }
+
+    public static List<InviteKey> getKeysPaged(int limit, int offset) {
+        List<InviteKey> keys = new ArrayList<>();
+        String sql = "SELECT * FROM invite_keys ORDER BY creation_date DESC LIMIT ? OFFSET ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, limit);
+            ps.setInt(2, offset);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    InviteKey k = new InviteKey();
+                    k.id = rs.getInt("id");
+                    k.inviteKey = rs.getString("invite_key");
+                    k.grantRole = rs.getString("grant_role");
+                    k.maxUses = rs.getInt("max_uses");
+                    k.timesUsed = rs.getInt("times_used");
+                    k.expiresAt = rs.getLong("expires_at");
+                    k.createdByUserId = rs.getInt("created_by_user_id");
+                    k.creationDate = rs.getLong("creation_date");
+                    keys.add(k);
+                }
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return keys;
+    }
+
+    public static void updateKey(int id, String newRole, int newMaxUses, long newExpiresAt) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "UPDATE invite_keys SET grant_role = ?, max_uses = ?, expires_at = ? WHERE id = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, newRole);
+                ps.setInt(2, newMaxUses);
+                ps.setLong(3, newExpiresAt);
+                ps.setInt(4, id);
+                ps.executeUpdate();
+            } catch (SQLException e) { throw new RuntimeException(e); }
+        });
+    }
+
+    public static void deleteKey(int id) {
+        writeQueue.runAsyncWrite(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM invite_keys WHERE id = ?")) {
+                ps.setInt(1, id);
+                ps.executeUpdate();
+            } catch (SQLException e) { throw new RuntimeException(e); }
+        });
+    }
+
+    /**
+     * Get a (safe) paginated list of users. Safe, because it does not get email or password hash.
+     */
+    public static List<ArchiveUser> getUsersPaged(int limit, int offset) {
+        List<ArchiveUser> users = new ArrayList<>();
+        // Explicitly SELECT only the safe columns. Do NOT use SELECT *
+        String sql = "SELECT id, username, role, restriction_level, banned, invite_key_used, note, creation_date " +
+                "FROM users ORDER BY creation_date DESC LIMIT ? OFFSET ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, limit);
+            ps.setInt(2, offset);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ArchiveUser u = new ArchiveUser();
+                    u.id = rs.getInt("id");
+                    u.username = rs.getString("username");
+                    u.role = rs.getString("role");
+                    u.restrictionLevel = rs.getString("restriction_level");
+                    u.banned = rs.getBoolean("banned");
+                    u.inviteKeyUsed = rs.getString("invite_key_used");
+                    u.note = rs.getString("note");
+                    u.creationDate = rs.getLong("creation_date");
+                    users.add(u);
+                }
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return users;
+    }
+
+    public static void updateUserAdmin(int id, String newRole, boolean isBanned, String newNote) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "UPDATE users SET role = ?, banned = ?, note = ? WHERE id = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, newRole);
+                ps.setBoolean(2, isBanned);
+                ps.setString(3, newNote);
+                ps.setInt(4, id);
+                ps.executeUpdate();
+            } catch (SQLException e) { throw new RuntimeException(e); }
+        });
+    }
+
+    public static ArchiveUser getUserProfile(int id) {
+        String sql = "SELECT id, username, email, about_me, role, creation_date FROM users WHERE id = ?";
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    ArchiveUser u = new ArchiveUser();
+                    u.id = rs.getInt("id");
+                    u.username = rs.getString("username");
+                    u.email = rs.getString("email");
+                    u.aboutMe = rs.getString("about_me");
+                    u.role = rs.getString("role");
+                    u.creationDate = rs.getLong("creation_date");
+                    return u;
+                }
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return null;
+    }
+
+    public static String updateUserProfile(int id, String username, String email, String plainPassword, String aboutMe) {
+        if (username == null || username.isBlank()) return "Error: Username cannot be empty.";
+
+        // Sanitize
+        username = username.trim();
+        if (email != null) email = email.trim();
+        if (aboutMe != null) aboutMe = aboutMe.trim();
+
+        try (Connection conn = getConnection()) {
+
+            // Single statement executes are auto-committed safely by JDBC
+            if (plainPassword != null && !plainPassword.isBlank()) {
+                if (plainPassword.length() < 6) return "Error: Password must be at least 6 characters.";
+                String hash = org.mindrot.jbcrypt.BCrypt.hashpw(plainPassword, org.mindrot.jbcrypt.BCrypt.gensalt(12));
+
+                String sql = "UPDATE users SET username = ?, email = ?, password_hash = ?, about_me = ? WHERE id = ?";
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setString(1, username);
+                    if (email == null || email.isEmpty()) ps.setNull(2, java.sql.Types.VARCHAR); else ps.setString(2, email);
+                    ps.setString(3, hash);
+                    ps.setString(4, aboutMe);
+                    ps.setInt(5, id);
+                    ps.executeUpdate();
+                }
+            } else {
+                String sql = "UPDATE users SET username = ?, email = ?, about_me = ? WHERE id = ?";
+                try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                    ps.setString(1, username);
+                    if (email == null || email.isEmpty()) ps.setNull(2, java.sql.Types.VARCHAR); else ps.setString(2, email);
+                    ps.setString(3, aboutMe);
+                    ps.setInt(4, id);
+                    ps.executeUpdate();
+                }
+            }
+            return "Success";
+        } catch (SQLException e) {
+            if (e.getMessage().toLowerCase().contains("unique")) {
+                return "Error: Username or Email is already taken.";
+            }
+            e.printStackTrace();
+            return "Error: Database failure while updating profile.";
+        }
+    }
+
+    public static void deleteUser(int id) {
+        try (Connection conn = getConnection()) {
+            // Attempt to completely erase the user
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM users WHERE id = ?")) {
+                ps.setInt(1, id);
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            // If deletion is blocked because they created invite keys, anonymize them instead!
+            if (e.getMessage().toLowerCase().contains("constraint") || e.getMessage().toLowerCase().contains("foreign key")) {
+                try (Connection conn = getConnection();
+                     PreparedStatement ps = conn.prepareStatement(
+                             "UPDATE users SET username = ?, email = NULL, password_hash = '', about_me = '', banned = 1 WHERE id = ?")) {
+                    ps.setString(1, "[Deleted User " + id + "]");
+                    ps.setInt(2, id);
+                    ps.executeUpdate();
+                } catch (SQLException ex) { throw new RuntimeException(ex); }
+            } else {
+                throw new RuntimeException(e);
+            }
+        }
     }
 }

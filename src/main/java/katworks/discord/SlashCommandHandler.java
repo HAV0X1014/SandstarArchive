@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import static katworks.Main.config;
+import static katworks.Main.startTime;
 import static katworks.discord.DiscordMain.allowedRole;
 import static katworks.discord.DiscordMain.jda;
 
@@ -30,6 +31,10 @@ public class SlashCommandHandler extends ListenerAdapter {
     public void onSlashCommandInteraction(SlashCommandInteractionEvent interaction) {
         if (!interaction.getMember().getRoles().contains(allowedRole)) return; //if the member does not have the role, do not process
         switch (interaction.getName()) {
+            case "ping": {
+                interaction.reply("The bot is up and has been running since: " + startTime).queue();
+                break;
+            }
             case "addaccount": {
                 String handle = interaction.getOption("screenname").getAsString();
                 String artistName = interaction.getOption("artist").getAsString().trim();
@@ -73,7 +78,6 @@ public class SlashCommandHandler extends ListenerAdapter {
                 });
                 break;
             }
-
             case "downloadpost": {
                 String url = interaction.getOption("url").getAsString();
                 String safetyRating = interaction.getOption("postsafetyrating").getAsString();
@@ -131,48 +135,45 @@ public class SlashCommandHandler extends ListenerAdapter {
                 });
                 break;
             }
-
-
             case "accountinfo": {
                 String queryName = interaction.getOption("screenname").getAsString();
                 TwitterAccount returnedAccount = DatabaseHandler.getAccountByScreenName(queryName);
                 interaction.reply(returnedAccount.toString()).queue();
                 break;
             }
-
             case "gettwitteraccountinfo": {
                 TwitterAccount account = TwitterScraper.getUserProfileByName(interaction.getOption("screenname").getAsString());
                 interaction.reply(account.toString()).queue();
                 break;
             }
-
             case "editaccount": {
                 String screenName = interaction.getOption("screenname").getAsString();
                 if (interaction.getOption("displayname") != null) {
-                    DatabaseHandler.setDisplayName(screenName,interaction.getOption("displayname").getAsString());
+                    DatabaseHandler.setDisplayName(screenName, interaction.getOption("displayname").getAsString());
                 }
                 if (interaction.getOption("accountstatus") != null) {
-                    DatabaseHandler.setAccountStatus(screenName,interaction.getOption("accountstatus").getAsString());
+                    DatabaseHandler.setAccountStatus(screenName, interaction.getOption("accountstatus").getAsString());
                 }
                 if (interaction.getOption("isprotected") != null) {
-                    DatabaseHandler.setProtected(screenName,interaction.getOption("isprotected").getAsBoolean());
+                    DatabaseHandler.setProtected(screenName, interaction.getOption("isprotected").getAsBoolean());
                 }
                 if (interaction.getOption("downloadstatus") != null) {
-                    DatabaseHandler.setDownloadStatus(screenName,interaction.getOption("downloadstatus").getAsBoolean());
+                    DatabaseHandler.setDownloadStatus(screenName, interaction.getOption("downloadstatus").getAsBoolean());
                 }
                 if (interaction.getOption("safetyrating") != null) {
-                    DatabaseHandler.setAccountSafetyRating(screenName,interaction.getOption("safetyrating").getAsString());
+                    DatabaseHandler.setAccountSafetyRating(screenName, interaction.getOption("safetyrating").getAsString());
+                }
+                if (interaction.getOption("lastscrapedid") != null) {
+                    DatabaseHandler.setLastScrapedIdByName(screenName, interaction.getOption("lastscrapedid").getAsString());
                 }
                 interaction.reply("Edits submitted for " + screenName + ".").queue();
                 break;
             }
-
             case "deleteaccount": {
                 DatabaseHandler.deleteAccountByScreenName(interaction.getOption("screenname").getAsString());
                 interaction.reply("Account " + interaction.getOption("screenname").getAsString() + " deleted.").queue();
                 break;
             }
-
             case "addalias": {
                 interaction.reply(DatabaseHandler.addAlias(
                         interaction.getOption("artistname").getAsString(),
@@ -181,7 +182,6 @@ public class SlashCommandHandler extends ListenerAdapter {
                 )).queue();
                 break;
             }
-
             case "scrapefrom": {
                 //get account from post ID, then continue to scrape from there on.
                 TwitterPost post = TwitterScraper.scrapePostById(interaction.getOption("postid").getAsString());
@@ -189,7 +189,7 @@ public class SlashCommandHandler extends ListenerAdapter {
                     try {
                         TwitterAccount account = ensureAccountExists(post);
 
-                        TwitterScraper.scrapeFromPostId(account,interaction.getOption("postid").getAsString());
+                        TwitterScraper.scrapeFromPostId(account,interaction.getOption("postid").getAsString(),interaction.getOption("stopid").getAsString());
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
@@ -197,7 +197,6 @@ public class SlashCommandHandler extends ListenerAdapter {
                 interaction.reply("Scrape continued from " + interaction.getOption("postid").getAsString() + " onward.").queue();
                 break;
             }
-
             case "setartistdescription": {
                 String artistName = interaction.getOption("artistname").getAsString();
                 String description = interaction.getOption("description").getAsString();
@@ -226,6 +225,7 @@ public class SlashCommandHandler extends ListenerAdapter {
         ThreadChannel newThread = forum.createThreadChannel(profile.screenName + " @" + profile.screenName).complete();
 
         DatabaseHandler.setDiscordThreadId(profile.twitterId, newThread.getId());
+        Thread.sleep(30); //very small sleep so the write goes through - race condition fix?
 
         // Refresh account data with new thread ID
         return DatabaseHandler.getAccountById(post.twitterId);

@@ -6,11 +6,14 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
+import java.util.Map;
 
 public class Config {
-    public LinkedHashSet<String> contentRatings = new LinkedHashSet<>(); //array of possible content ratings for posts. (kf, nonkf, rejected)
-    public LinkedHashSet<String> safetyRatings = new LinkedHashSet<>(); //array of possible safety ratings for posts and accounts. (safe, nsfw, nsfl)
+    public ArrayList<String> contentRatings = new ArrayList<>(); //array of possible content ratings for posts. (kf, nonkf, rejected)
+    public ArrayList<String> safetyRatings = new ArrayList<>(); //array of possible safety ratings for posts and accounts. (safe, nsfw, nsfl)
     public int checkIntervalHours; //how often to run the download loop in hours.
 
     public String databasePath; //path to the .db file of the database.
@@ -20,7 +23,7 @@ public class Config {
     public String botToken; //the discord bot token.
     public String serverID; //the ID of the server we are using as our frontend.
     public String rawFeedChannel;
-    public LinkedHashSet<String> channelsForSafetyRatings = new LinkedHashSet<>(); //the corresponding channelIDs for each of the contentRatings.
+    public ArrayList<String> channelsForSafetyRatings = new ArrayList<>(); //the corresponding channelIDs for each of the contentRatings.
     public String rejectedChannel; //the channel ID for rejected images.
     public String statusChannel; //the channel ID to send status updates and errors to.
     public String accountsChannel; //the channel ID for account threads
@@ -42,15 +45,15 @@ public class Config {
         archiveConfig.put("CheckIntervalHours",3);
 
         JSONObject databaseConfig = new JSONObject();
-        databaseConfig.put("DatabasePath","./archive.db");
-        databaseConfig.put("ImageDownloadPath","./ArchiveImages");
+        databaseConfig.put("DatabasePath","archive.db");
+        databaseConfig.put("ImageDownloadPath","ArchiveImages");
 
         JSONObject discordConfig = new JSONObject();
         discordConfig.put("Enabled",true);
         discordConfig.put("BotToken","Make a new bot for this.");
         discordConfig.put("ServerID","Make a new server for this.");
         discordConfig.put("RawChannelFeed","ID for your #raw-feed channel. This is where all posts go, for now.");
-        discordConfig.put("ChannelsForSafetyRatings", new JSONArray().put("ID for your #safe channel.").put("ID for your #nsfw channel.").put("ID for your #NSFL channel."));
+        discordConfig.put("ChannelsForSafetyRatings", new JSONArray().put("ID for your #Safe channel.").put("ID for your #NSFW channel.").put("ID for your #NSFL channel."));
         discordConfig.put("RejectedChannel","ID for your #rejected channel. By the way, the channels in ChannelsForSafetyRatings need to correspond to the number and position of the ratings you put in SafetyRatings.");
         discordConfig.put("AccountsChannel","ID for your accounts channel for threads to be made in.");
         discordConfig.put("AllowedUsersRoleID","Role ID for the role that allows users to mark posts.");

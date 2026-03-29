@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="/favicon2.png">
     <title>Sandstar Archive</title>
     <link rel="stylesheet" href="/style.css">
 </head>
@@ -30,6 +31,55 @@
 </main>
 
 <div id="loading" class="hidden">Loading more...</div>
+
+<!-- AUTHENTICATION MODALS -->
+<div id="authModal" class="modal hidden">
+    <div class="modal-content">
+        <span class="modal-close" onclick="closeAuthModal()">&times;</span>
+
+        <!-- LOGIN FORM -->
+        <div id="loginFormContainer">
+            <h2>Log In</h2>
+            <div class="form-group">
+                <label>Username or Email</label>
+                <input type="text" id="loginIdentifier" class="form-input" placeholder="Enter username or email">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="loginPassword" class="form-input" placeholder="Enter password">
+            </div>
+            <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="submitLogin()">Log In</button>
+            <p style="text-align: center; margin-top: 15px; font-size: 0.85rem; color: var(--text-muted);">
+                Don't have an account? <a href="javascript:void(0)" onclick="toggleAuthMode('register')">Sign up here</a>.
+            </p>
+        </div>
+
+        <!-- REGISTER FORM -->
+        <div id="registerFormContainer" class="hidden">
+            <h2>Sign Up</h2>
+            <div class="form-group">
+                <label>Username (Required)</label>
+                <input type="text" id="regUsername" class="form-input" placeholder="Choose a username">
+            </div>
+            <div class="form-group">
+                <label>Email (Optional)</label>
+                <input type="email" id="regEmail" class="form-input" placeholder="Enter email (optional)">
+            </div>
+            <div class="form-group">
+                <label>Password (min 6 chars)</label>
+                <input type="password" id="regPassword" class="form-input" placeholder="Choose a secure password">
+            </div>
+            <div class="form-group">
+                <label>Invite Key (Required)</label>
+                <input type="text" id="regInvite" class="form-input" placeholder="Invite key">
+            </div>
+            <button class="btn btn-primary" style="width: 100%; margin-top: 10px;" onclick="submitRegister()">Create Account</button>
+            <p style="text-align: center; margin-top: 15px; font-size: 0.85rem; color: var(--text-muted);">
+                Already have an account? <a href="javascript:void(0)" onclick="toggleAuthMode('login')">Log in here</a>.
+            </p>
+        </div>
+    </div>
+</div>
 
 <script src="/app.js"></script>
 </body>
