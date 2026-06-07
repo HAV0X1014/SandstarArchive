@@ -4,6 +4,7 @@ const LIMIT = 24;
 let isLoading = false;
 const searchBar = document.getElementById('searchBar');
 const searchResults = document.getElementById('searchResults');
+const imageSearchInput = document.getElementById('imageSearchInput');
 let searchTimeout;
 
 // --- STATE MANAGEMENT & CACHING ---
@@ -260,6 +261,18 @@ function renderAdminView() {
                 <select id="dlPostContent" class="admin-input"><option value="" disabled selected>Content Rating</option>${generateOptionsHtml('Content', '')}</select>
                 <select id="dlPostSafety" class="admin-input"><option value="" disabled selected>Safety Rating</option>${generateOptionsHtml('Safety', '')}</select>
                 <button class="btn btn-primary" onclick="adminRequest('POST', '/api/tasks/download', { url: document.getElementById('dlPostUrl').value, contentRating: document.getElementById('dlPostContent').value, safetyRating: document.getElementById('dlPostSafety').value })">Submit</button>
+            `
+        },
+        {
+            task: "bot api token generate revoke view user",
+            title: "Manage Bot Tokens",
+            html: `
+                <input type="number" id="botTokenUserId" class="input-textarea admin-input" placeholder="User ID">
+                <div style="display: flex; gap: 5px; margin-top: 5px;">
+                    <button class="btn btn-primary" style="flex:1;" onclick="adminManageBotToken('GET')">View</button>
+                    <button class="btn btn-primary" style="flex:1;" onclick="adminManageBotToken('POST')">Generate</button>
+                    <button class="btn" style="flex:1; background: #a22; border-color: #711;" onclick="adminManageBotToken('DELETE')">Revoke</button>
+                </div>
             `
         }
     ];
@@ -633,9 +646,38 @@ function submitEditAccount() {
     adminRequest('PATCH', `/api/accounts/${handle}`, body);
 }
 
-// ==========================================
-// MY PROFILE VIEW (/me)
-// ==========================================
+async function adminManageBotToken(action) {
+    const userId = document.getElementById('botTokenUserId').value;
+    if (!userId) {
+        return alert("Please enter a User ID.");
+    }
+
+    if (action === 'POST' && !confirm(`Generate a new bot token for User ID ${userId}? Any existing token will be overwritten.`)) return;
+    if (action === 'DELETE' && !confirm(`Revoke the bot token for User ID ${userId}?`)) return;
+
+    try {
+        const res = await fetch(`/api/users/${userId}/token`, {
+            method: action,
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        const data = await res.json();
+
+        if (data.success) {
+            if (action === 'GET') {
+                prompt(`Active Bot Token for User ${userId}:`, data.token);
+            } else if (action === 'POST') {
+                prompt(`New Bot Token generated for User ${userId}. Copy it now:`, data.token);
+            } else if (action === 'DELETE') {
+                alert(`Bot token revoked for User ${userId}.`);
+            }
+        } else {
+            alert(data.error || data.message || "Action failed.");
+        }
+    } catch (e) {
+        alert("Request failed: " + e);
+    }
+}
 
 async function renderProfileView() {
     if (!currentUser.loggedIn) {
@@ -650,7 +692,8 @@ async function renderProfileView() {
                 <span style="color: var(--text-muted);">Role: <strong style="color: var(--accent);">${currentUser.role}</strong></span>
             </div>
 
-            <div class="admin-card">
+            <div class="admin-card" style="margin-bottom: 25px;">
+                <h3 style="margin-top: 0;">Profile Details</h3>
                 <div class="form-group">
                     <label>Username</label>
                     <input type="text" id="meUsername" class="form-input" placeholder="Display name and login name">
@@ -676,7 +719,7 @@ async function renderProfileView() {
         </div>
     `;
 
-    // Fetch current details to populate form
+    // Fetch current profile details
     try {
         const res = await fetch('/api/me');
         if (res.ok) {
@@ -1310,6 +1353,69 @@ function renderSearchResults(artists, accounts) {
 function closeSearch() {
     searchResults.classList.add('hidden');
     searchBar.value = '';
+}
+
+imageSearchInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    // Ask user for strictness or use a default
+    const threshold = prompt("Enter similarity threshold (0-10). 0 is exact, 10 is loose.", "5") || "5";
+
+    const formData = new FormData();
+    formData.append('image', file);
+
+    app.innerHTML = '<div class="page-container"><h1>Search Results</h1><div class="gallery" id="gallery"></div></div>';
+
+    try {
+        const res = await fetch(`/api/search/image?threshold=${threshold}`, {
+            method: 'POST',
+            body: formData
+        });
+        const matches = await res.json();
+
+        renderImageSearchResults(matches);
+    } catch (err) {
+        alert("Search failed: " + err);
+    }
+
+    // Reset input
+    imageSearchInput.value = '';
+});
+
+function renderImageSearchResults(matches) {
+    const gallery = document.getElementById('gallery');
+    if (matches.length === 0) {
+        gallery.innerHTML = '<p>No similar images found within that threshold.</p>';
+        return;
+    }
+
+    gallery.innerHTML = '';
+    matches.forEach(match => {
+        const m = match.media;
+        const dist = match.distance;
+
+        const card = document.createElement('a');
+        card.className = 'post-card';
+        card.href = `/post/${m.postId}`;
+
+        const filename = m.localPath.split(/[\\/]/).pop();
+        const thumbSrc = `/api/media/${m.id}/thumbnail`;
+
+        card.innerHTML = `
+            <div class="card-media-grid">
+                <div class="card-media-item">
+                    <img src="${thumbSrc}" loading="lazy">
+                    <div class="card-overlay">Match Distance: ${dist}</div>
+                </div>
+            </div>
+            <div class="card-footer">
+                <small class="card-date">Media ID: ${m.id}</small><br>
+                <small class="card-date">Rating: ${m.contentRating} / ${m.safetyRating}</small>
+            </div>
+        `;
+        gallery.appendChild(card);
+    });
 }
 
 document.addEventListener('click', (e) => {

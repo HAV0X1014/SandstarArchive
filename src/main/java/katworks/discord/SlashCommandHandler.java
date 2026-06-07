@@ -5,6 +5,7 @@ import katworks.impl.TwitterAccount;
 import katworks.impl.TwitterMedia;
 import katworks.impl.TwitterPost;
 import katworks.twitter.TwitterScraper;
+import katworks.util.ExtractPostId;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.MessageEmbed;
@@ -19,6 +20,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import static katworks.Main.config;
 import static katworks.Main.startTime;
@@ -26,7 +29,7 @@ import static katworks.discord.DiscordMain.allowedRole;
 import static katworks.discord.DiscordMain.jda;
 
 public class SlashCommandHandler extends ListenerAdapter {
-
+    private static final ExecutorService COMMAND_POOL = Executors.newFixedThreadPool(5);
     @Override
     public void onSlashCommandInteraction(SlashCommandInteractionEvent interaction) {
         if (!interaction.getMember().getRoles().contains(allowedRole)) return; //if the member does not have the role, do not process
@@ -61,7 +64,7 @@ public class SlashCommandHandler extends ListenerAdapter {
                                 artistName,
                                 downloadStatus,
                                 accountSafetyRating
-                        );
+                        ).get();
                         TextChannel accountsChannel = interaction.getGuild().getTextChannelById(config.accountsChannel);
 
                         if (accountsChannel != null) {
@@ -75,7 +78,7 @@ public class SlashCommandHandler extends ListenerAdapter {
                         interaction.getHook().sendMessage("Database Error: " + e.getMessage()).queue();
                         e.printStackTrace();
                     }
-                });
+                }, COMMAND_POOL);
                 break;
             }
             case "downloadpost": {
@@ -83,17 +86,16 @@ public class SlashCommandHandler extends ListenerAdapter {
                 String safetyRating = interaction.getOption("postsafetyrating").getAsString();
                 String contentRating = interaction.getOption("contentrating").getAsString();
 
-                if (!url.contains("status/")) {
-                    interaction.reply("Invalid URL.").setEphemeral(true).queue();
-                    return;
-                }
-
                 interaction.deferReply().queue();
 
                 CompletableFuture.runAsync(() -> {
                     try {
                         // 1. Extract Post ID
-                        String postId = url.split("status/")[1].split("\\?")[0];
+                        String postId = ExtractPostId.extract(url);
+                        if (postId == null) {
+                            interaction.reply("Invalid URL.").setEphemeral(true).queue();
+                            return;
+                        }
 
                         // 2. Scrape the post
                         TwitterPost post = TwitterScraper.scrapePostById(postId);
@@ -132,7 +134,7 @@ public class SlashCommandHandler extends ListenerAdapter {
                         interaction.getHook().sendMessage("Error: " + e.getMessage()).queue();
                         e.printStackTrace();
                     }
-                });
+                }, COMMAND_POOL);
                 break;
             }
             case "accountinfo": {
@@ -184,17 +186,19 @@ public class SlashCommandHandler extends ListenerAdapter {
             }
             case "scrapefrom": {
                 //get account from post ID, then continue to scrape from there on.
-                TwitterPost post = TwitterScraper.scrapePostById(interaction.getOption("postid").getAsString());
-                CompletableFuture.runAsync(() ->{
+                String postId = interaction.getOption("postid").getAsString();
+                String stopId = interaction.getOption("stopid").getAsString();
+                TwitterPost post = TwitterScraper.scrapePostById(postId);
+                CompletableFuture.runAsync(() -> {
                     try {
                         TwitterAccount account = ensureAccountExists(post);
 
-                        TwitterScraper.scrapeFromPostId(account,interaction.getOption("postid").getAsString(),interaction.getOption("stopid").getAsString());
+                        TwitterScraper.scrapeFromPostId(account,postId,stopId);
                     } catch (Exception e) {
                         e.printStackTrace();
                     }
-                });
-                interaction.reply("Scrape continued from " + interaction.getOption("postid").getAsString() + " onward.").queue();
+                }, COMMAND_POOL);
+                interaction.reply("Scrape continued from " + postId + " onward.").queue();
                 break;
             }
             case "setartistdescription": {

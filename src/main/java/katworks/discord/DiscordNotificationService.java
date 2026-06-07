@@ -32,7 +32,6 @@ public class DiscordNotificationService {
                 uploads.add(FileUpload.fromData(file, file.getName()));
             }
         }
-        //todo: check if uploads list is null? i havent found a reason to add this yet though.
         String originalUrl = "https://x.com/i/status/" + post.postId;
 
         //send to artist thread first to get file links and jump url

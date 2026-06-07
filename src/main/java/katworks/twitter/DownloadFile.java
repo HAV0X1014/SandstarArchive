@@ -43,6 +43,7 @@ public class DownloadFile {
                 );
             } else { //for everything else
                 ImageSimilarityService service = new ImageSimilarityService();
+
                 String pHash = String.valueOf(service.computeHash(image, HashType.PHASH));
 
                 String sha256 = calculateSHA256(targetFile);

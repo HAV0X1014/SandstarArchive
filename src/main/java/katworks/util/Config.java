@@ -7,9 +7,6 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.LinkedHashSet;
-import java.util.Map;
 
 public class Config {
     public ArrayList<String> contentRatings = new ArrayList<>(); //array of possible content ratings for posts. (kf, nonkf, rejected)
@@ -31,8 +28,6 @@ public class Config {
 
     public boolean webEnabled; //if the website/API should be enabled
     public int port; //the port the web server should serve on
-    public String key; //the private key/password users need to enter to edit posts
-
     /**
      * Creates a config with defaults for the user to edit and set as they want.
      */
@@ -61,7 +56,6 @@ public class Config {
         JSONObject webConfig = new JSONObject();
         webConfig.put("Enabled",true);
         webConfig.put("Port",7070);
-        webConfig.put("Key","a secret key that allows editing posts on the site.");
 
         configRoot.put("Archive",archiveConfig);
         configRoot.put("Database",databaseConfig);
@@ -110,7 +104,6 @@ public class Config {
         //web config
         config.webEnabled = webConfig.getBoolean("Enabled");
         config.port = webConfig.getInt("Port");
-        config.key = webConfig.getString("Key");
 
         return config;
     }

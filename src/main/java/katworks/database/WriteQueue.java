@@ -1,10 +1,9 @@
 package katworks.database;
 
-import org.sqlite.SQLiteConfig;
-
 import java.sql.*;
 import java.util.concurrent.*;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 import static katworks.Main.config;
 
@@ -38,7 +37,7 @@ public class WriteQueue {
         writerExecutor.submit(() -> {
             Connection conn = null;
             try {
-                conn = getConnection();
+                conn = DatabaseHandler.getConnection();
                 conn.setAutoCommit(false);
                 task.accept(conn);
                 conn.commit();
@@ -55,19 +54,34 @@ public class WriteQueue {
         });
     }
 
-    /**
-     * Helper to get a connection with the correct timeout
-     */
-    private Connection getConnection() throws SQLException {
-        SQLiteConfig config = new SQLiteConfig();
-        config.setBusyTimeout(5000); // This is the most important line
-        config.setJournalMode(SQLiteConfig.JournalMode.WAL);
-        return DriverManager.getConnection(dbUrl,config.toProperties());
+    public <T> CompletableFuture<T> runAsyncWriteWithResult(Function<Connection, T> task) {
+        CompletableFuture<T> future = new CompletableFuture<>();
+        writerExecutor.submit(() -> {
+            Connection conn = null;
+            try {
+                conn = DatabaseHandler.getConnection();
+                conn.setAutoCommit(false);
+                T result = task.apply(conn);
+                conn.commit();
+                future.complete(result);
+            } catch (Exception e) {
+                System.err.println("Database write task failed: " + e.getMessage());
+                if (conn != null) {
+                    try { conn.rollback(); } catch (SQLException ex) { /* ignored */ }
+                }
+                future.completeExceptionally(e);
+            } finally {
+                if (conn != null) {
+                    try { conn.close(); } catch (SQLException ex) { /* ignored */ }
+                }
+            }
+        });
+        return future;
     }
 
     // For startup tasks like creating tables
     private void executeImmediate(String sql) {
-        try (Connection conn = getConnection(); Statement s = conn.createStatement()) {
+        try (Connection conn = DatabaseHandler.getConnection(); Statement s = conn.createStatement()) {
             s.execute(sql);
         } catch (SQLException e) { e.printStackTrace(); }
     }

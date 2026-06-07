@@ -39,8 +39,10 @@ public class ScrapeService {
         for (TwitterAccount account : accountList) {
             try {
                 System.out.println("Checking " + account.screenName + ".");
-                TwitterScraper.scrapeByAccount(account);
-                discordStatusUpdate.append(account.screenName).append(", ");
+                int newPostAmount = TwitterScraper.scrapeByAccount(account);
+                if (newPostAmount > 0) {
+                    discordStatusUpdate.append("\n").append(account.screenName).append(": ").append(newPostAmount);
+                }
             } catch (Exception e) {
                 if (config.discordEnabled) SendStatusMessage.sendMessage("Failed to complete scrape for: " + account.screenName + "!\n" + e.getMessage() + "\n" + Arrays.toString(e.getStackTrace()));
                 System.err.println("Failed to complete scrape for: " + account.screenName + "!");

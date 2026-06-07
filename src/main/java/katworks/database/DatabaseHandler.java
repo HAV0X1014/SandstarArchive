@@ -1,6 +1,9 @@
 package katworks.database;
 
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
 import katworks.impl.*;
+import net.dv8tion.jda.api.entities.User;
 import org.sqlite.SQLiteConfig;
 
 import java.nio.file.Files;
@@ -13,6 +16,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 import static katworks.Main.config;
 import static katworks.Main.writeQueue;
@@ -21,16 +25,26 @@ public class DatabaseHandler {
     private static final String dbUrl = "jdbc:sqlite:" + config.databasePath;
     private static final String ALPHANUMERIC = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final HikariDataSource dataSource;
 
-    private static Connection getConnection() throws SQLException {
+    static {
+        HikariConfig hkConfig = new HikariConfig();
+        hkConfig.setJdbcUrl(dbUrl);
+        // SQLite doesn't need huge pools. 10 is plenty for high concurrency.
+        hkConfig.setMaximumPoolSize(10);
+
+        // Pass the SQLite properties directly to the pool so they only happen ONCE
         SQLiteConfig sqliteConfig = new SQLiteConfig();
-        // Wait up to 5 seconds for a lock to clear before throwing SQLITE_BUSY
         sqliteConfig.setBusyTimeout(5000);
-        // Allow readers and writers to work simultaneously
         sqliteConfig.setJournalMode(SQLiteConfig.JournalMode.WAL);
         sqliteConfig.setSynchronous(SQLiteConfig.SynchronousMode.NORMAL);
+        hkConfig.setDataSourceProperties(sqliteConfig.toProperties());
 
-        return DriverManager.getConnection(dbUrl, sqliteConfig.toProperties());
+        dataSource = new HikariDataSource(hkConfig);
+    }
+
+    public static Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
     }
 
     /**
@@ -401,6 +415,7 @@ public class DatabaseHandler {
 
     /**
      * Registers a new account to the database with the provided details.
+     *
      * @param twitterId
      * @param screenName
      * @param displayName
@@ -409,13 +424,12 @@ public class DatabaseHandler {
      * @param accountSafetyRating
      * @return
      */
-    public static String registerAccount(String twitterId, String screenName, String displayName, String artistName, boolean downloadStatus, String accountSafetyRating) {
-        // 1. Input Sanitation & Validation
-        if (twitterId == null || twitterId.isBlank()) return "Error: Twitter ID is required.";
-        if (screenName == null || screenName.isBlank()) return "Error: Screen name is required.";
-        if (artistName == null || artistName.isBlank()) return "Error: Artist name is required.";
+    public static CompletableFuture<String> registerAccount(String twitterId, String screenName, String displayName, String artistName, boolean downloadStatus, String accountSafetyRating) {
+        if (twitterId == null || twitterId.isBlank()) return CompletableFuture.completedFuture("Error: Twitter ID is required.");
+        if (screenName == null || screenName.isBlank()) return CompletableFuture.completedFuture("Error: Screen name is required.");
+        if (artistName == null || artistName.isBlank()) return CompletableFuture.completedFuture("Error: Artist name is required.");
         if (!config.safetyRatings.contains(accountSafetyRating) && !accountSafetyRating.equals("Waiting")) {
-            return "Error: Invalid safety rating.";
+            return CompletableFuture.completedFuture("Error: Invalid safety rating.");
         }
 
         twitterId = twitterId.trim();
@@ -423,78 +437,85 @@ public class DatabaseHandler {
         artistName = artistName.trim();
         if (displayName != null) displayName = displayName.trim();
 
-        String responseMessage = "";
-
-        try (Connection connection = getConnection()) {
-            connection.setAutoCommit(false); // Start transaction
+        String finalTwitterId = twitterId;
+        String finalArtistName = artistName;
+        String finalScreenName = screenName;
+        String finalDisplayName = displayName;
+        return writeQueue.runAsyncWriteWithResult(conn -> {
+            String responseMessage = "";
 
             try {
-                // 2. Check if account already exists
+                conn.setAutoCommit(false); // Start transaction
+                // 1. Safe Check with Try-With-Resources for ResultSet
                 String checkSql = "SELECT twitter_id FROM twitter_accounts WHERE twitter_id = ?";
-                try (PreparedStatement checkStmt = connection.prepareStatement(checkSql)) {
-                    checkStmt.setString(1, twitterId);
-                    if (checkStmt.executeQuery().next()) {
-                        return "Error: This Twitter account is already in the database.";
-                    }
-                }
-
-                // 3. Resolve the Artist ID
-                int artistId = -1;
-                String artistCheckSql = "SELECT id FROM artists WHERE name = ?";
-                try (PreparedStatement artistStmt = connection.prepareStatement(artistCheckSql)) {
-                    artistStmt.setString(1, artistName);
-                    ResultSet rs = artistStmt.executeQuery();
-                    if (rs.next()) {
-                        artistId = rs.getInt("id");
-                        responseMessage += "Found existing artist '" + artistName + "'. Linking account... ";
-                    }
-                }
-
-                // 4. Create Artist if they don't exist
-                if (artistId == -1) {
-                    String createArtistSql = "INSERT INTO artists (name, description) VALUES (?, ?)";
-                    try (PreparedStatement createStmt = connection.prepareStatement(createArtistSql, Statement.RETURN_GENERATED_KEYS)) {
-                        createStmt.setString(1, artistName);
-                        createStmt.setString(2, "Added via registration");
-                        createStmt.executeUpdate();
-
-                        ResultSet generatedKeys = createStmt.getGeneratedKeys();
-                        if (generatedKeys.next()) {
-                            artistId = generatedKeys.getInt(1);
-                            responseMessage += "Created new artist '" + artistName + "'. ";
-                        } else {
-                            throw new SQLException("Failed to create artist, no ID obtained.");
+                try (PreparedStatement checkStmt = conn.prepareStatement(checkSql)) {
+                    checkStmt.setString(1, finalTwitterId);
+                    try (ResultSet rs = checkStmt.executeQuery()) {
+                        if (rs.next()) {
+                            conn.rollback(); // <--- CRITICAL FIX
+                            return "Error: This Twitter account is already in the database.";
                         }
                     }
                 }
 
-                // 5. Create the Twitter Account Entry
-                String insertAccountSql =
-                        "INSERT INTO twitter_accounts " +
-                                "(twitter_id, artist_id, screen_name, display_name, account_status, download_status, safety_rating) " +
-                                "VALUES (?, ?, ?, ?, 'Active', ?, ?)";
+                // 2. Safe Artist Resolve
+                int artistId = -1;
+                String artistCheckSql = "SELECT id FROM artists WHERE name = ?";
+                try (PreparedStatement artistStmt = conn.prepareStatement(artistCheckSql)) {
+                    artistStmt.setString(1, finalArtistName);
+                    try (ResultSet rs = artistStmt.executeQuery()) {
+                        if (rs.next()) {
+                            artistId = rs.getInt("id");
+                            responseMessage += "Found existing artist '" + finalArtistName + "'. Linking account... ";
+                        }
+                    }
+                }
 
-                try (PreparedStatement accStmt = connection.prepareStatement(insertAccountSql)) {
-                    accStmt.setString(1, twitterId);
+                // 3. Create Artist
+                if (artistId == -1) {
+                    String createArtistSql = "INSERT INTO artists (name, description) VALUES (?, ?)";
+                    try (PreparedStatement createStmt = conn.prepareStatement(createArtistSql, Statement.RETURN_GENERATED_KEYS)) {
+                        createStmt.setString(1, finalArtistName);
+                        createStmt.setString(2, "No description added.");
+                        createStmt.executeUpdate();
+
+                        try (ResultSet generatedKeys = createStmt.getGeneratedKeys()) {
+                            if (generatedKeys.next()) {
+                                artistId = generatedKeys.getInt(1);
+                                responseMessage += "Created new artist '" + finalArtistName + "'. ";
+                            } else {
+                                conn.rollback();
+                                return "Error: Failed to create artist, no ID obtained.";
+                            }
+                        }
+                    }
+                }
+
+                // 4. Create Account
+                String insertAccountSql = "INSERT INTO twitter_accounts (twitter_id, artist_id, screen_name, display_name, account_status, download_status, safety_rating) VALUES (?, ?, ?, ?, 'Active', ?, ?)";
+                try (PreparedStatement accStmt = conn.prepareStatement(insertAccountSql)) {
+                    accStmt.setString(1, finalTwitterId);
                     accStmt.setInt(2, artistId);
-                    accStmt.setString(3, screenName);
-                    accStmt.setString(4, displayName);
+                    accStmt.setString(3, finalScreenName);
+                    accStmt.setString(4, finalDisplayName);
                     accStmt.setBoolean(5, downloadStatus);
                     accStmt.setString(6, accountSafetyRating);
                     accStmt.executeUpdate();
                 }
 
-                connection.commit(); // COMMIT ONLY IF EVERYTHING SUCCEEDS
+                conn.commit();
                 return responseMessage + "Account registered successfully.";
 
-            } catch (SQLException e) {
-                connection.rollback(); // PREVENTS DATABASE LOCKS
+            } catch (Exception e) {
+                try {
+                    conn.rollback();
+                } catch (SQLException ex) {
+                    throw new RuntimeException(ex);
+                }
                 e.printStackTrace();
                 return "Error: Database failure during account registration.";
             }
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
-        }
+        });
     }
 
     /**
@@ -632,11 +653,20 @@ public class DatabaseHandler {
                             "   FOREIGN KEY (created_by_user_id) REFERENCES users(id)\n" +
                             ");");
             statement.execute(
+                    "CREATE TABLE IF NOT EXISTS sessions (\n" +
+                            "    session_token TEXT PRIMARY KEY,\n" +
+                            "    user_id INTEGER NOT NULL,\n" +
+                            "    token_type TEXT NOT NULL DEFAULT 'User',\n" + // 'User' or 'Bot'
+                            "    created_at INTEGER NOT NULL,\n" +
+                            "    expires_at INTEGER,\n" + // NULL means never expires
+                            "    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE\n" +
+                            ");");
+            statement.execute(
                     "CREATE INDEX IF NOT EXISTS idx_post_twitter_id ON posts(twitter_id);\n" +
                             "CREATE INDEX IF NOT EXISTS idx_media_post_id ON media(post_id);\n" +
                             "CREATE INDEX IF NOT EXISTS idx_media_data_hash ON media(data_hash);\n" +
-                            "CREATE INDEX IF NOT EXISTS idx_media_p_hash ON media(perceptual_hash" +
-                            ");");
+                            "CREATE INDEX IF NOT EXISTS idx_media_p_hash ON media(perceptual_hash);\n" +
+                            "CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token);");
 
             InviteKey initialKey = generateKey(Permission.EXECUTE,2,-1,null);
 
@@ -1629,5 +1659,259 @@ public class DatabaseHandler {
                 throw new RuntimeException(e);
             }
         }
+    }
+
+    // Add to DatabaseHandler.java
+
+    /**
+     * Calculates the Hamming Distance between two longs.
+     * Lower value = Higher similarity. 0 is an exact match.
+     */
+    public static int getHammingDistance(long h1, long h2) {
+        return Long.bitCount(h1 ^ h2);
+    }
+
+    /**
+     * Fetches all media records with their hashes for in-memory comparison.
+     */
+    public static List<TwitterMedia> getAllMediaWithHashes() {
+        List<TwitterMedia> mediaList = new ArrayList<>();
+        String sql = "SELECT id, post_id, local_path, perceptual_hash, data_hash, content_rating, safety_rating FROM media";
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                TwitterMedia m = new TwitterMedia();
+                m.id = rs.getInt("id");
+                m.postId = rs.getString("post_id");
+                m.localPath = rs.getString("local_path");
+                m.perceptualHash = rs.getString("perceptual_hash");
+                m.dataHash = rs.getString("data_hash");
+                m.contentRating = rs.getString("content_rating");
+                m.safetyRating = rs.getString("safety_rating");
+                mediaList.add(m);
+            }
+        } catch (SQLException e) { throw new RuntimeException(e); }
+        return mediaList;
+    }
+
+    // =========================================================
+    // STATIC / SINGLE-TOKEN SESSION MANAGEMENT
+    // =========================================================
+
+    /**
+     * Retrieves an existing valid user token, or generates a new one if none exists.
+     * This ensures only ONE user token exists in the sessions table per user.
+     */
+    public static String getOrCreateUserToken(int userId, long expiresAt) {
+        String selectSql = "SELECT session_token FROM sessions WHERE user_id = ? AND token_type = 'User' LIMIT 1";
+
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(selectSql)) {
+            ps.setInt(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("session_token"); // Return existing token
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+
+        // If no token exists, generate a new one and write it synchronously to return it safely
+        String newToken = "user_" + generateSecureTokenString();
+
+        // Write it synchronously so the login workflow can immediately hand it back to the client
+        try (Connection conn = getConnection()) {
+            String insertSql = "INSERT INTO sessions (user_id, session_token, token_type, created_at, expires_at) VALUES (?, ?, 'User', ?, ?)";
+            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+                ps.setInt(1, userId);
+                ps.setString(2, newToken);
+                ps.setLong(3, Instant.now().getEpochSecond());
+                if (expiresAt == -1) {
+                    ps.setNull(4, java.sql.Types.INTEGER);
+                } else {
+                    ps.setLong(4, expiresAt);
+                }
+                ps.executeUpdate();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+
+        return newToken;
+    }
+
+    /**
+     * Helper to generate a secure random string token.
+     */
+    private static String generateSecureTokenString() {
+        byte[] randomBytes = new byte[32];
+        RANDOM.nextBytes(randomBytes);
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(randomBytes);
+    }
+
+    /**
+     * Looks up an active session or bot token in the database.
+     * Returns an ArchiveUser object if valid, otherwise returns null.
+     */
+    public static ArchiveUser getSessionByToken(String token) {
+        String sql = "SELECT u.id, u.username, u.email, u.password_hash, u.role, " +
+                "u.restriction_level, u.banned, u.invite_key_used, u.note, " +
+                "u.about_me, u.creation_date, s.expires_at " +
+                "FROM sessions s " +
+                "JOIN users u ON s.user_id = u.id " +
+                "WHERE s.session_token = ?";
+
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, token);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    boolean banned = rs.getBoolean("banned");
+                    if (banned) {
+                        return null; // Banned users cannot authenticate
+                    }
+
+                    long expiresAt = rs.getLong("expires_at");
+                    // rs.wasNull() handles cases where database value is NULL (never expires, i.e., bots)
+                    if (!rs.wasNull() && java.time.Instant.now().getEpochSecond() > expiresAt) {
+                        return null; // Expired
+                    }
+
+                    // Construct and return ArchiveUser
+                    ArchiveUser user = new ArchiveUser();
+                    user.id = rs.getInt("id");
+                    user.username = rs.getString("username");
+                    user.email = rs.getString("email");
+                    user.passwordHash = rs.getString("password_hash");
+                    user.role = rs.getString("role");
+                    user.restrictionLevel = rs.getString("restriction_level");
+                    user.banned = banned;
+                    user.inviteKeyUsed = rs.getString("invite_key_used");
+                    user.note = rs.getString("note");
+                    user.aboutMe = rs.getString("about_me");
+                    user.creationDate = rs.getLong("creation_date");
+
+                    return user;
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return null;
+    }
+
+    /**
+     * Deletes a user's current token. This acts as a standard logout.
+     */
+    public static void deleteSession(String token) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "DELETE FROM sessions WHERE session_token = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, token);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    /**
+     * Completely revokes all tokens (User and Bot tokens) for a user ID.
+     */
+    public static void deleteSessionsByUserId(int userId) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "DELETE FROM sessions WHERE user_id = ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setInt(1, userId);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    /**
+     * Deletes expired session entries.
+     */
+    public static void cleanExpiredSessions() {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setLong(1, Instant.now().getEpochSecond());
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+    }
+
+    // ==========================================
+    // BOT TOKEN MANAGEMENT
+    // ==========================================
+
+    /**
+     * Generates a new Bot token for the user, revoking any existing ones so they only ever have one.
+     */
+    public static String generateBotToken(int userId) {
+        String token = "bot_" + generateSecureTokenString();
+
+        writeQueue.runAsyncWrite(conn -> {
+            // First, delete any existing bot tokens for this user
+            String deleteSql = "DELETE FROM sessions WHERE user_id = ? AND token_type = 'Bot'";
+            try (PreparedStatement ps = conn.prepareStatement(deleteSql)) {
+                ps.setInt(1, userId);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+
+            // Then insert the new one
+            String insertSql = "INSERT INTO sessions (user_id, session_token, token_type, created_at, expires_at) VALUES (?, ?, 'Bot', ?, NULL)";
+            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
+                ps.setInt(1, userId);
+                ps.setString(2, token);
+                ps.setLong(3, Instant.now().getEpochSecond());
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
+
+        return token;
+    }
+
+    /**
+     * Retrieves the single active Bot token belonging to a specific user.
+     * Returns null if they do not have one.
+     */
+    public static String getBotTokenByUserId(int userId) {
+        String sql = "SELECT session_token FROM sessions WHERE user_id = ? AND token_type = 'Bot' LIMIT 1";
+
+        try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString("session_token");
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
+        return null;
+    }
+
+    /**
+     * Revokes (deletes) the bot token for a user.
+     */
+    public static void revokeBotToken(int userId) {
+        writeQueue.runAsyncWrite(conn -> {
+            String sql = "DELETE FROM sessions WHERE user_id = ? AND token_type = 'Bot'";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setInt(1, userId);
+                ps.executeUpdate();
+            } catch (SQLException e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 }

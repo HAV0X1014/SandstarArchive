@@ -1,34 +1,38 @@
 package katworks.web;
 
+import io.github.yuvraj0028.models.HashType;
+import io.github.yuvraj0028.service.ImageSimilarityService;
 import io.javalin.Javalin;
+import io.javalin.config.SizeUnit;
 import io.javalin.http.Context;
 import io.javalin.http.Handler;
+import io.javalin.http.UploadedFile;
 import io.javalin.http.staticfiles.Location;
 import katworks.database.DatabaseHandler;
 import katworks.impl.*;
 import katworks.twitter.TwitterScraper;
+import katworks.util.ExtractPostId;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Stream;
 
 import static katworks.Main.config;
 
 public class WebServer {
 
-    // Maps a secure random string (Cookie) to a User's ID and Role.
-    public record UserSession(int userId, String username, String role) {}
-    private static final Map<String, UserSession> activeSessions = new ConcurrentHashMap<>();
     private static final java.security.SecureRandom secureRandom = new java.security.SecureRandom();
 
     private static String generateSessionToken() {
@@ -46,6 +50,28 @@ public class WebServer {
             }
     );
 
+    // Helper for generating proper external URLs for OpenGraph tags
+    private static String getMediaUrl(String host, TwitterMedia m) {
+        try {
+            String encodedContent = java.net.URLEncoder.encode(m.contentRating, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            String encodedSafety = java.net.URLEncoder.encode(m.safetyRating, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            String encodedFile = java.net.URLEncoder.encode(Paths.get(m.localPath).getFileName().toString(), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            return host + "/images/" + encodedContent + "/" + encodedSafety + "/" + encodedFile;
+        } catch (Exception e) {
+            return host + "/api/media/" + m.id + "/thumbnail"; // safe fallback
+        }
+    }
+
+    // Helper to sanitize HTML input for injection into meta tags
+    private static String escapeHtml(String text) {
+        if (text == null) return "";
+        return text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
     public static void start() {
         Javalin.create(figgy -> {
             figgy.staticFiles.add("public/", Location.EXTERNAL);
@@ -54,6 +80,7 @@ public class WebServer {
                 staticFiles.location = Location.EXTERNAL;
                 staticFiles.hostedPath = "/images";
             });
+            figgy.jetty.multipartConfig.maxFileSize(10, SizeUnit.MB);
 
             // ==========================================
             // 1. GLOBAL AUTHENTICATION & RBAC FILTER
@@ -62,34 +89,61 @@ public class WebServer {
                 String method = ctx.method().name();
                 String path = ctx.path();
 
-                // 1. Allow public access to GET requests and Auth routes
-                if (method.equals("GET") || path.startsWith("/api/auth") || path.equals("/api/login") || path.equals("/api/logout")) {
+                // 1. Identify explicitly public routes
+                boolean isAuthRoute = path.startsWith("/api/auth") || path.equals("/api/login") || path.equals("/api/logout") || path.equals("/api/search/image");
+                boolean isPublicDataGet = method.equals("GET") && (
+                        path.startsWith("/api/posts") ||
+                                path.startsWith("/api/accounts") ||
+                                path.startsWith("/api/artists") ||
+                                path.startsWith("/api/media") ||
+                                path.equals("/api/config")
+                );
+
+                // 2. Extract Token from Cookie or Bearer Header
+                String token = ctx.cookie("SESSION_ID");
+                if (token == null) {
+                    String authHeader = ctx.header("Authorization");
+                    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+                        token = authHeader.substring(7).trim();
+                    }
+                }
+
+                // 3. Attempt to retrieve user from DB if token exists
+                ArchiveUser session = null;
+                if (token != null) {
+                    session = DatabaseHandler.getSessionByToken(token);
+                }
+
+                // 4. Attach session to the context so handlers (like /api/me) can use it
+                if (session != null) {
+                    ctx.attribute("userSession", session);
+                }
+
+                // 5. If route is public, stop the interceptor here and allow access
+                if (isAuthRoute || isPublicDataGet) {
                     return;
                 }
 
-                // 2. Verify Session Cookie
-                String sessionId = ctx.cookie("SESSION_ID");
-                if (sessionId == null || !activeSessions.containsKey(sessionId)) {
-                    throw new io.javalin.http.UnauthorizedResponse("Unauthorized: Please log in.");
+                // 6. PROTECTED ROUTES: Enforce login requirement
+                if (session == null) {
+                    throw new io.javalin.http.UnauthorizedResponse("Unauthorized: Missing, invalid, or expired token.");
                 }
 
-                UserSession session = activeSessions.get(sessionId);
-
-                // 3. Define Role Hierarchy (Higher number = more permissions)
-                int userLevel = switch (session.role()) {
+                // 7. RBAC Authorization for protected routes
+                int userLevel = switch (session.role) {
                     case "Execute" -> 3;
                     case "Write"  -> 2;
                     default      -> 1; // "Read" or unknown
                 };
 
-                // 4. Protect Endpoints based on Role
-                // Execute (Level 3) is required for managing accounts, tasks, and users
+                // Admin endpoints
                 if (path.startsWith("/api/accounts") || path.startsWith("/api/tasks") || path.startsWith("/api/artists") ||
                         path.startsWith("/api/keys") || path.startsWith("/api/users")) {
                     if (userLevel < 3) {
                         throw new io.javalin.http.ForbiddenResponse("Forbidden: Execute access required.");
                     }
                 }
+                // Editor endpoints
                 else if (path.startsWith("/api/media") || path.startsWith("/api/posts")) {
                     if (userLevel < 2) {
                         throw new io.javalin.http.ForbiddenResponse("Forbidden: Editor access required.");
@@ -130,7 +184,6 @@ public class WebServer {
 
             figgy.routes.get("/api/accounts/{id}", ctx -> ctx.json(DatabaseHandler.getAccountById(ctx.pathParam("id"))));
 
-            // Replaces /api/posts/{twitterId}
             figgy.routes.get("/api/accounts/{id}/posts", ctx -> {
                 String twitterId = ctx.pathParam("id");
                 int limit = ctx.queryParamAsClass("limit", Integer.class).getOrDefault(20);
@@ -141,7 +194,6 @@ public class WebServer {
                 ctx.json(DatabaseHandler.getPostsByUserIdPaged(twitterId, limit, offset, contentFilters, safetyFilters, sort));
             });
 
-            // Merged /artists and /artists/search
             figgy.routes.get("/api/artists", ctx -> {
                 String q = ctx.queryParam("q");
                 if (q != null && !q.isEmpty()) ctx.json(DatabaseHandler.searchArtists(q));
@@ -154,6 +206,58 @@ public class WebServer {
                 ArtistDetails details = DatabaseHandler.getArtistDetailsByName(ctx.pathParam("name"));
                 if (details == null) ctx.status(404);
                 else ctx.json(details);
+            });
+
+            figgy.routes.post("/api/search/image", ctx -> {
+                UploadedFile file = ctx.uploadedFile("image");
+                int threshold = ctx.queryParamAsClass("threshold", Integer.class).getOrDefault(10);
+
+                if (threshold > 15) threshold = 15;
+                if (threshold < 0) threshold = 0;
+
+                if (file == null) {
+                    ctx.status(400).json(Map.of("error", "No image uploaded"));
+                    return;
+                }
+
+                try {
+                    BufferedImage uploadedImage = ImageIO.read(file.content());
+                    if (uploadedImage == null) {
+                        ctx.status(400).json(Map.of("error", "Invalid image file"));
+                        return;
+                    }
+
+                    ImageSimilarityService service = new ImageSimilarityService();
+                    long uploadPHash = service.computeHash(uploadedImage, HashType.PHASH);
+
+                    List<TwitterMedia> allMedia = DatabaseHandler.getAllMediaWithHashes();
+                    List<Map<String, Object>> results = new ArrayList<>();
+
+                    for (TwitterMedia m : allMedia) {
+                        if (m.perceptualHash == null || m.perceptualHash.isEmpty()) continue;
+
+                        try {
+                            long dbPHash = Long.parseLong(m.perceptualHash);
+                            int distance = DatabaseHandler.getHammingDistance(uploadPHash, dbPHash);
+
+                            if (distance <= threshold) {
+                                Map<String, Object> match = new HashMap<>();
+                                match.put("media", m);
+                                match.put("distance", distance);
+                                results.add(match);
+                            }
+                        } catch (NumberFormatException e) {
+                            // Skip malformed hashes
+                        }
+                    }
+
+                    results.sort(Comparator.comparingInt(a -> (int) a.get("distance")));
+                    ctx.json(results);
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    ctx.status(500).json(Map.of("error", "Internal processing error"));
+                }
             });
 
             figgy.routes.get("/api/media/{id}", ctx -> ctx.json(DatabaseHandler.getMediaById(Integer.parseInt(ctx.pathParam("id")))));
@@ -189,7 +293,7 @@ public class WebServer {
 
                 try {
                     long fileSize = Files.size(targetPath);
-                    if (fileSize > 10 * 1024 * 1024) { // 10 MB limit
+                    if (fileSize > 100 * 1024 * 1024) { // 100 MB limit
                         ctx.status(413).result("Image too large to generate thumbnail");
                         return;
                     }
@@ -255,22 +359,21 @@ public class WebServer {
             figgy.routes.post("/api/login", ctx -> {
                 @SuppressWarnings("unchecked")
                 Map<String, String> req = ctx.bodyAsClass(Map.class);
-                String identifier = req.get("identifier"); // Can be username or email
+                String identifier = req.get("identifier");
                 String password = req.get("password");
 
                 ArchiveUser user = DatabaseHandler.getUserByIdentifier(identifier);
 
-                // Check user exists, is not banned, and password matches
                 if (user != null && !user.banned && org.mindrot.jbcrypt.BCrypt.checkpw(password, user.passwordHash)) {
 
-                    // Generate secure token and save to memory
-                    String token = generateSessionToken();
-                    activeSessions.put(token, new UserSession(user.id, user.username, user.role));
+                    // Expiration: 3 Months (Approx 90 Days)
+                    long secondsInThreeMonths = 90L * 24 * 60 * 60;
+                    long expiresAt = java.time.Instant.now().getEpochSecond() + secondsInThreeMonths;
 
-                    // Send the token to the browser as an HttpOnly cookie
-                    // Hardcoding the header is the most version-proof way across all Javalin versions
-                    ctx.header("Set-Cookie", "SESSION_ID=" + token + "; HttpOnly; Path=/; SameSite=Strict");
+                    // Fetch existing token if already available, or construct a new persistent one
+                    String token = DatabaseHandler.getOrCreateUserToken(user.id, expiresAt);
 
+                    ctx.header("Set-Cookie", "SESSION_ID=" + token + "; HttpOnly; Path=/; SameSite=Strict; Max-Age=" + secondsInThreeMonths);
                     ctx.json(Map.of("success", true, "role", user.role, "username", user.username));
                 } else {
                     ctx.status(401).json(Map.of("success", false, "error", "Invalid credentials or banned account."));
@@ -278,22 +381,28 @@ public class WebServer {
             });
 
             figgy.routes.post("/api/logout", ctx -> {
+                //disabled because there is only one token per account and deleting it is pointless - or worse - will break all other sessions
+                /*
                 String sessionId = ctx.cookie("SESSION_ID");
-                if (sessionId != null) activeSessions.remove(sessionId);
+                if (sessionId != null) {
+                    DatabaseHandler.deleteSession(sessionId);
+                }
+                 */
 
-                // Clear the cookie in the browser
                 ctx.header("Set-Cookie", "SESSION_ID=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict");
                 ctx.json(Map.of("success", true));
             });
 
             figgy.routes.get("/api/auth/me", ctx -> {
                 String sessionId = ctx.cookie("SESSION_ID");
-                if (sessionId != null && activeSessions.containsKey(sessionId)) {
-                    UserSession session = activeSessions.get(sessionId);
-                    ctx.json(Map.of("success", true, "username", session.username(), "role", session.role()));
-                } else {
-                    ctx.status(401).json(Map.of("success", false));
+                if (sessionId != null) {
+                    ArchiveUser session = DatabaseHandler.getSessionByToken(sessionId);
+                    if (session != null) {
+                        ctx.json(Map.of("success", true, "username", session.username, "role", session.role));
+                        return;
+                    }
                 }
+                ctx.status(401).json(Map.of("success", false));
             });
 
             figgy.routes.patch("/api/media/{id}", ctx -> {
@@ -328,34 +437,49 @@ public class WebServer {
             });
 
             figgy.routes.get("/api/me", ctx -> {
-                UserSession session = activeSessions.get(ctx.cookie("SESSION_ID"));
-                ctx.json(DatabaseHandler.getUserProfile(session.userId()));
+                ArchiveUser session = ctx.attribute("userSession");
+                if (session == null) {
+                    ctx.status(401);
+                    return;
+                }
+                ctx.json(DatabaseHandler.getUserProfile(session.id));
             });
 
             figgy.routes.patch("/api/me", ctx -> {
-                UserSession session = activeSessions.get(ctx.cookie("SESSION_ID"));
+                ArchiveUser session = ctx.attribute("userSession");
+                if (session == null) {
+                    ctx.status(401);
+                    return;
+                }
                 @SuppressWarnings("unchecked")
                 Map<String, String> req = ctx.bodyAsClass(Map.class);
 
                 String res = DatabaseHandler.updateUserProfile(
-                        session.userId(), req.get("username"), req.get("email"), req.get("password"), req.get("aboutMe")
+                        session.id, req.get("username"), req.get("email"), req.get("password"), req.get("aboutMe")
                 );
 
                 if (res.equals("Success")) {
-                    // Update session token memory in case their username changed
-                    activeSessions.put(ctx.cookie("SESSION_ID"), new UserSession(session.userId(), req.get("username"), session.role()));
-                    ctx.json(Map.of("success", true, "username", req.get("username")));
+                    // Force re-login if password or user data was updated to keep details accurate
+                    String sessionId = ctx.cookie("SESSION_ID");
+                    if (sessionId != null) {
+                        DatabaseHandler.deleteSession(sessionId);
+                    }
+                    ctx.header("Set-Cookie", "SESSION_ID=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict");
+                    ctx.json(Map.of("success", true, "username", req.get("username"), "requiresReauth", true));
                 } else {
                     ctx.status(400).json(Map.of("success", false, "error", res));
                 }
             });
 
             figgy.routes.delete("/api/me", ctx -> {
-                UserSession session = activeSessions.get(ctx.cookie("SESSION_ID"));
-                DatabaseHandler.deleteUser(session.userId());
+                ArchiveUser session = ctx.attribute("userSession");
+                if (session == null) {
+                    ctx.status(401);
+                    return;
+                }
+                DatabaseHandler.deleteUser(session.id);
+                DatabaseHandler.deleteSessionsByUserId(session.id);
 
-                // Log them out automatically
-                activeSessions.remove(ctx.cookie("SESSION_ID"));
                 ctx.header("Set-Cookie", "SESSION_ID=; HttpOnly; Path=/; Max-Age=0; SameSite=Strict");
                 ctx.json(Map.of("success", true));
             });
@@ -453,7 +577,7 @@ public class WebServer {
 
                 CompletableFuture.runAsync(() -> {
                     try {
-                        String postId = url.split("status/")[1].split("\\?")[0];
+                        String postId = ExtractPostId.extract(url);
                         TwitterPost post = TwitterScraper.scrapePostById(postId);
                         TwitterAccount dbAccount = DatabaseHandler.getAccountById(post.twitterId);
                         if (dbAccount == null || dbAccount.twitterId == null) {
@@ -480,10 +604,13 @@ public class WebServer {
                 int maxUses = Integer.parseInt(req.getOrDefault("maxUses", "-1").toString());
                 long expiresAt = Long.parseLong(req.getOrDefault("expiresAt", "-1").toString());
 
-                String sessionId = ctx.cookie("SESSION_ID");
-                UserSession session = activeSessions.get(sessionId);
+                ArchiveUser session = ctx.attribute("userSession");
+                if (session == null) {
+                    ctx.status(401);
+                    return;
+                }
 
-                InviteKey newKey = DatabaseHandler.generateKey(role, maxUses, expiresAt, session.userId());
+                InviteKey newKey = DatabaseHandler.generateKey(role, maxUses, expiresAt, session.id);
                 ctx.json(Map.of("success", true, "key", newKey.inviteKey));
             });
 
@@ -522,8 +649,38 @@ public class WebServer {
                 String note = (String) req.get("note");
 
                 DatabaseHandler.updateUserAdmin(id, role, banned, note);
-                activeSessions.entrySet().removeIf(entry -> entry.getValue().userId() == id);
+
+                // Delete active sessions for this updated user
+                DatabaseHandler.deleteSessionsByUserId(id);
                 ctx.json(Map.of("success", true));
+            });
+
+            // Admin: Get the active bot token for a specific user ID
+            figgy.routes.get("/api/users/{id}/token", ctx -> {
+                int targetUserId = Integer.parseInt(ctx.pathParam("id"));
+                String token = DatabaseHandler.getBotTokenByUserId(targetUserId);
+
+                if (token != null) {
+                    ctx.json(Map.of("success", true, "token", token));
+                } else {
+                    ctx.json(Map.of("success", false, "error", "No active bot token exists for this user."));
+                }
+            });
+
+            // Admin: Generate a new bot token for a specific user ID
+            figgy.routes.post("/api/users/{id}/token", ctx -> {
+                int targetUserId = Integer.parseInt(ctx.pathParam("id"));
+                String newToken = DatabaseHandler.generateBotToken(targetUserId);
+
+                ctx.json(Map.of("success", true, "token", newToken, "message", "Token generated successfully."));
+            });
+
+            // Admin: Revoke an existing bot token for a specific user ID
+            figgy.routes.delete("/api/users/{id}/token", ctx -> {
+                int targetUserId = Integer.parseInt(ctx.pathParam("id"));
+                DatabaseHandler.revokeBotToken(targetUserId);
+
+                ctx.json(Map.of("success", true, "message", "Bot token revoked."));
             });
 
             // ==========================================
@@ -538,20 +695,400 @@ public class WebServer {
             figgy.routes.get("/artists", spaHandler);
             figgy.routes.get("/artist/{name}", spaHandler);
             figgy.routes.get("/account/{id}", spaHandler);
-            figgy.routes.get("/post/{id}", spaHandler);
-            figgy.routes.get("/media/{id}", spaHandler);
             figgy.routes.get("/admin", spaHandler);
             figgy.routes.get("/admin/keys", spaHandler);
             figgy.routes.get("/admin/users", spaHandler);
             figgy.routes.get("/me", spaHandler);
 
+            // Discord OpenGraph intercept handlers for precise embeds:
+            figgy.routes.get("/post/{id}", ctx -> {
+                String postId = ctx.pathParam("id");
+                TwitterPost post = DatabaseHandler.getPostDetails(postId);
+                serveEmbedPage(ctx, post, null);
+            });
+
+            figgy.routes.get("/media/{id}", ctx -> {
+                int mediaId;
+                try {
+                    mediaId = Integer.parseInt(ctx.pathParam("id"));
+                } catch (NumberFormatException e) {
+                    ctx.status(400).result("Invalid media ID");
+                    return;
+                }
+                TwitterMedia m = DatabaseHandler.getMediaById(mediaId);
+                serveEmbedPage(ctx, null, m);
+            });
+
+            // oEmbed endpoint - Discord will call this automatically when it sees the <link rel="alternate"> tag
+            figgy.routes.get("/oembed", ctx -> {
+                String urlParam = ctx.queryParam("url");
+                if (urlParam == null || urlParam.isEmpty()) {
+                    ctx.status(400).result("url parameter is required");
+                    return;
+                }
+
+                String baseUrl = ctx.scheme() + "://" + ctx.host();
+                String authorName = "Unknown Artist";
+                String screenName = "unknown";
+                String description = "No description available.";
+                String authorUrl = urlParam; // fallback
+
+                TwitterPost post = null;
+                TwitterMedia media = null;
+                TwitterAccount account = null;
+
+                try {
+                    URI uri = new URI(urlParam);
+                    String path = uri.getPath();
+
+                    if (path.startsWith("/post/")) {
+                        String postId = path.substring("/post/".length());
+                        post = DatabaseHandler.getPostDetails(postId);
+                    } else if (path.startsWith("/media/")) {
+                        String mediaIdStr = path.substring("/media/".length());
+                        int mediaId = Integer.parseInt(mediaIdStr);
+                        media = DatabaseHandler.getMediaById(mediaId);
+                        if (media != null) {
+                            post = DatabaseHandler.getPostDetails(media.postId);
+                        }
+                    }
+                    if (post != null) {
+                        account = DatabaseHandler.getAccountById(post.twitterId);
+                        authorUrl = baseUrl + "/post/" + post.postId; // always link to post URL
+
+                    }
+                } catch (Exception ignored) {
+                    // invalid URL → fallback to generic embed
+                }
+
+                if (account != null) {
+                    authorName = account.displayName != null ? account.displayName : authorName;
+                    screenName = account.screenName != null ? account.screenName : screenName;
+                }
+
+                if (media != null) {
+                    description = (media.caption != null && !media.caption.isEmpty() ? media.caption : "");
+                    if (!description.isEmpty()) description += "\n\n";
+                    description += "Rating: " + media.contentRating + " / " + media.safetyRating;
+                } else if (post != null) {
+                    description = (post.postText != null ? post.postText : "");
+                    if (!description.isEmpty()) description += "\n\n";
+                    description += "Rating: " + post.contentRating + " / " + post.safetyRating;
+                }
+
+                String fullAuthorName = authorName + " (@" + screenName + ")";
+
+                Map<String, Object> oembed = new LinkedHashMap<>();
+                oembed.put("version", "1.0");
+                oembed.put("type", "rich");
+                // Intentionally omitting "title" to prevent an unneeded bold blue link above the author
+                oembed.put("author_name", fullAuthorName);
+                oembed.put("author_url", authorUrl);
+                oembed.put("provider_name", "Sandstar Archive");
+                oembed.put("provider_url", baseUrl);
+                oembed.put("description", description);
+                oembed.put("width", 550);
+                oembed.put("height", 400);
+
+                ctx.contentType("application/json+oembed");
+                ctx.json(oembed);
+            });
+
             figgy.routes.error(404, ctx -> {
                 if (ctx.path().startsWith("/images")) serveDirectoryListing(ctx);
                 else if (!ctx.path().startsWith("/api")) ctx.html(Files.readString(Paths.get("public/index.html")));
             });
+
+            //figgy.routes.get("/activity/{id}", WebServer::serveActivityPub);
+            figgy.routes.get("/activity/{id}", WebServer::serveActivityPubPost);
+            figgy.routes.get("/activity/users/{screenName}", WebServer::serveActivityPubUser);
         }).start(config.port);
 
         System.out.println("Web Interface started at http://localhost:" + config.port);
+    }
+
+    public static void serveActivityPub(Context ctx) {
+        String postId = ctx.pathParam("id");
+        TwitterPost post = DatabaseHandler.getPostDetails(postId);
+
+        if (post == null) {
+            ctx.status(404).result("Post not found");
+            return;
+        }
+
+        TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
+        String hostUrl = ctx.scheme() + "://" + ctx.host();
+
+        // Map the Author
+        String screenName = account != null ? account.screenName : "unknown";
+        String displayName = (account != null && account.displayName != null && !account.displayName.isEmpty()) ? account.displayName : screenName;
+
+        Map<String, Object> attributedTo = new LinkedHashMap<>();
+        attributedTo.put("type", "Person");
+        attributedTo.put("id", hostUrl + "/users/" + screenName);
+        attributedTo.put("name", displayName);
+        attributedTo.put("preferredUsername", screenName);
+
+        // Format the Content (Discord's Mastodon parser uses HTML for text)
+        String desc = post.postText != null ? escapeHtml(post.postText) : "";
+        if (!desc.isEmpty()) desc += "<br><br>";
+        desc += "Rating: " + post.contentRating + " / " + post.safetyRating;
+        // ActivityPub line breaks MUST be <br>
+        desc = desc.replace("\n", "<br>");
+
+        // Build the main Note
+        Map<String, Object> activity = new LinkedHashMap<>();
+        activity.put("@context", "https://www.w3.org/ns/activitystreams");
+        activity.put("type", "Note");
+        activity.put("id", hostUrl + "/post/" + postId);
+        activity.put("url", hostUrl + "/post/" + postId);
+        activity.put("attributedTo", attributedTo);
+        activity.put("content", desc);
+
+        if (post.postDate > 0) {
+            activity.put("published", java.time.Instant.ofEpochSecond(post.postDate).toString());
+        }
+
+        // Attach all images/videos
+        List<Map<String, Object>> attachments = new ArrayList<>();
+        if (post.media != null) {
+            for (TwitterMedia m : post.media) {
+                if (m.localPath == null) continue;
+
+                String mediaUrl = getMediaUrl(hostUrl, m);
+                String mimeType = (m.mediaType != null && m.mediaType.contains("mp4")) ? "video/mp4" : "image/jpeg";
+
+                Map<String, Object> att = new LinkedHashMap<>();
+                att.put("type", "Document"); // Mastodon uses "Document" for media
+                att.put("mediaType", mimeType);
+                att.put("url", mediaUrl);
+
+                if (m.caption != null && !m.caption.isEmpty()) {
+                    att.put("name", m.caption); // Alt text
+                }
+                attachments.add(att);
+            }
+        }
+
+        if (!attachments.isEmpty()) {
+            activity.put("attachment", attachments);
+        }
+
+        // Serve as application/activity+json
+        ctx.contentType("application/activity+json");
+        ctx.json(activity);
+    }
+
+    public static void serveActivityPubPost(Context ctx) {
+        String postId = ctx.pathParam("id");
+        TwitterPost post = DatabaseHandler.getPostDetails(postId);
+
+        if (post == null) {
+            ctx.status(404).result("Post not found");
+            return;
+        }
+
+        TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
+        String hostUrl = ctx.scheme() + "://" + ctx.host();
+        String screenName = account != null ? account.screenName : "unknown";
+
+        String desc = post.postText != null ? escapeHtml(post.postText) : "";
+        if (!desc.isEmpty()) desc += "<br><br>";
+        desc += "<b>Rating: " + post.contentRating + " / " + post.safetyRating + "</b>";
+        desc = desc.replace("\n", "<br>");
+
+        Map<String, Object> activity = new LinkedHashMap<>();
+
+        // Rule 1: Context must be an array mimicking Mastodon
+        activity.put("@context", List.of(
+                "https://www.w3.org/ns/activitystreams",
+                Map.of("sensitive", "as:sensitive")
+        ));
+
+        activity.put("type", "Note");
+        activity.put("id", hostUrl + "/activity/" + postId);
+        activity.put("url", hostUrl + "/post/" + postId);
+
+        // Rule 2: attributedTo MUST be a URL, not an object.
+        activity.put("attributedTo", hostUrl + "/activity/users/" + screenName);
+
+        // FxTwitter includes these explicitly
+        activity.put("summary", null);
+        activity.put("sensitive", "NSFW".equalsIgnoreCase(post.safetyRating)); // True if NSFW
+        activity.put("content", desc);
+
+        if (post.postDate > 0) {
+            activity.put("published", java.time.Instant.ofEpochSecond(post.postDate).toString());
+        }
+
+        List<Map<String, Object>> attachments = new ArrayList<>();
+        if (post.media != null) {
+            for (TwitterMedia m : post.media) {
+                if (m.localPath == null) continue;
+
+                String mediaUrl = getMediaUrl(hostUrl, m);
+                String mimeType = (m.mediaType != null && m.mediaType.contains("mp4")) ? "video/mp4" : "image/jpeg";
+
+                Map<String, Object> att = new LinkedHashMap<>();
+                att.put("type", "Document");
+                att.put("mediaType", mimeType);
+                att.put("url", mediaUrl);
+                if (m.caption != null && !m.caption.isEmpty()) {
+                    att.put("name", m.caption);
+                }
+                attachments.add(att);
+            }
+        }
+
+        if (!attachments.isEmpty()) {
+            activity.put("attachment", attachments);
+        }
+
+        ctx.contentType("application/activity+json; charset=utf-8");
+        ctx.json(activity);
+    }
+
+    public static void serveActivityPubUser(Context ctx) {
+        String screenName = ctx.pathParam("screenName");
+        TwitterAccount account = DatabaseHandler.getAccountByScreenName(screenName); // Assumes you have a method like this
+
+        String hostUrl = ctx.scheme() + "://" + ctx.host();
+        String displayName = (account != null && account.displayName != null && !account.displayName.isEmpty()) ? account.displayName : screenName;
+
+        Map<String, Object> actor = new LinkedHashMap<>();
+        actor.put("@context", "https://www.w3.org/ns/activitystreams");
+        actor.put("type", "Person");
+        actor.put("id", hostUrl + "/activity/users/" + screenName);
+        actor.put("url", hostUrl + "/users/" + screenName); // Fallback URL
+        actor.put("name", displayName);
+        actor.put("preferredUsername", screenName);
+
+        /*
+         * Optional: If you have avatar images, Mastodon puts them here so Discord can show the profile pic!
+         * Map<String, Object> icon = new LinkedHashMap<>();
+         * icon.put("type", "Image");
+         * icon.put("mediaType", "image/jpeg");
+         * icon.put("url", hostUrl + "/avatar/url.jpg");
+         * actor.put("icon", icon);
+         */
+
+        ctx.contentType("application/activity+json; charset=utf-8");
+        ctx.json(actor);
+    }
+
+    // Shared method to handle OpenGraph and oEmbed injection for Discord
+    private static void serveEmbedPage(Context ctx, TwitterPost post, TwitterMedia singleMedia) throws IOException {
+        Path path = Paths.get("public/index.html");
+        if (!Files.exists(path)) {
+            ctx.status(404).result("index.html not found");
+            return;
+        }
+
+        String html = Files.readString(path);
+
+        if (post == null && singleMedia == null) {
+            ctx.html(html);
+            return;
+        }
+
+        if (post == null) {
+            post = DatabaseHandler.getPostDetails(singleMedia.postId);
+        }
+
+        TwitterAccount account = post != null ? DatabaseHandler.getAccountById(post.twitterId) : null;
+        String hostUrl = ctx.scheme() + "://" + ctx.host();
+        StringBuilder og = new StringBuilder();
+
+        String screenName = account != null ? account.screenName : "unknown";
+
+        og.append("<meta property=\"og:site_name\" content=\"Sandstar Archive\" />\n");
+        og.append("<meta name=\"twitter:site\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
+        og.append("<meta name=\"twitter:creator\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
+
+        String desc = "";
+        if (singleMedia != null) {
+            desc = (singleMedia.caption != null && !singleMedia.caption.isEmpty() ? singleMedia.caption : "");
+            if (!desc.isEmpty()) desc += "\n\n";
+            desc += "Rating: " + singleMedia.contentRating + " / " + singleMedia.safetyRating;
+        } else if (post != null) {
+            desc = (post.postText != null ? post.postText : "");
+            if (!desc.isEmpty()) desc += "\n\n";
+            desc += "Rating: " + post.contentRating + " / " + post.safetyRating;
+        }
+
+        og.append("<meta property=\"og:description\" content=\"").append(escapeHtml(desc)).append("\" />\n");
+        og.append("<meta name=\"twitter:description\" content=\"").append(escapeHtml(desc)).append("\" />\n");
+
+        if (post != null && post.postDate > 0) {
+            String isoDate = java.time.Instant.ofEpochSecond(post.postDate).toString();
+            og.append("<meta property=\"article:published_time\" content=\"").append(isoDate).append("\" />\n");
+        }
+
+        //og.append("<meta property=\"og:type\" content=\"article\" />\n");
+        og.append("<meta name=\"theme-color\" content=\"#1DA1F2\" />\n");
+
+        List<TwitterMedia> mediaList = singleMedia != null ? List.of(singleMedia) :
+                (post != null && post.media != null ? post.media : Collections.emptyList());
+
+        if (!mediaList.isEmpty()) {
+            boolean hasVideo = mediaList.stream().anyMatch(m -> m.mediaType != null && m.mediaType.contains("mp4"));
+
+            if (hasVideo) {
+                og.append("<meta name=\"twitter:card\" content=\"player\" />\n");
+            } else {
+                og.append("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
+            }
+
+            for (TwitterMedia m : mediaList) {
+                if (m.localPath == null) continue;
+                String mediaUrl = getMediaUrl(hostUrl, m);
+
+                if (m.mediaType != null && m.mediaType.contains("mp4")) {
+                    og.append("<meta property=\"og:video\" content=\"").append(mediaUrl).append("\" />\n");
+                    og.append("<meta property=\"og:video:secure_url\" content=\"").append(mediaUrl).append("\" />\n");
+                    og.append("<meta property=\"og:video:type\" content=\"video/mp4\" />\n");
+
+                    og.append("<meta name=\"twitter:player\" content=\"").append(mediaUrl).append("\" />\n");
+                    og.append("<meta name=\"twitter:player:stream\" content=\"").append(mediaUrl).append("\" />\n");
+                    og.append("<meta name=\"twitter:player:stream:content_type\" content=\"video/mp4\" />\n");
+
+                    if (m.width > 0 && m.height > 0) {
+                        og.append("<meta property=\"og:video:width\" content=\"").append(m.width).append("\" />\n");
+                        og.append("<meta property=\"og:video:height\" content=\"").append(m.height).append("\" />\n");
+                        og.append("<meta name=\"twitter:player:width\" content=\"").append(m.width).append("\" />\n");
+                        og.append("<meta name=\"twitter:player:height\" content=\"").append(m.height).append("\" />\n");
+                    }
+                } else {
+                    og.append("<meta property=\"og:image\" content=\"").append(mediaUrl).append("\" />\n");
+                    og.append("<meta name=\"twitter:image\" content=\"").append(mediaUrl).append("\" />\n");
+
+                    if (m.width > 0 && m.height > 0) {
+                        og.append("<meta property=\"og:image:width\" content=\"").append(m.width).append("\" />\n");
+                        og.append("<meta property=\"og:image:height\" content=\"").append(m.height).append("\" />\n");
+                    }
+                }
+            }
+        } else {
+            og.append("<meta name=\"twitter:card\" content=\"summary\" />\n");
+        }
+
+        // oEmbed discovery link
+        // oEmbed discovery link (Keep this for Telegram/Slack)
+        String pageUrl = hostUrl + ctx.path();
+        String encodedPageUrl = URLEncoder.encode(pageUrl, StandardCharsets.UTF_8);
+        String oembedLink = "<link rel=\"alternate\" type=\"application/json+oembed\" href=\"" +
+                hostUrl + "/oembed?url=" + encodedPageUrl +
+                "\" title=\"Sandstar Archive\" />\n";
+        og.append(oembedLink);
+
+        // --- NEW: FAKE MASTODON ACTIVITYPUB LINK FOR DISCORD ---
+        String targetId = singleMedia != null ? singleMedia.postId : (post != null ? post.postId : "");
+        String activityPubLink = "<link rel=\"alternate\" type=\"application/activity+json\" href=\"" +
+                hostUrl + "/activity/" + targetId + "\" />\n";
+        og.append(activityPubLink);
+
+        html = html.replace("</head>", og.toString() + "</head>");
+        ctx.html(html);
     }
 
     private static void serveDirectoryListing(Context ctx) throws IOException {
