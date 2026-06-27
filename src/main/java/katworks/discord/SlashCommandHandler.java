@@ -187,7 +187,12 @@ public class SlashCommandHandler extends ListenerAdapter {
             case "scrapefrom": {
                 //get account from post ID, then continue to scrape from there on.
                 String postId = interaction.getOption("postid").getAsString();
-                String stopId = interaction.getOption("stopid").getAsString();
+                String stopId;
+                if (interaction.getOption("stopid") != null) {
+                    stopId = interaction.getOption("stopid").getAsString();
+                } else {
+                    stopId = "0"; //default 0 to scrape to end of account unless stopid is specified.
+                }
                 TwitterPost post = TwitterScraper.scrapePostById(postId);
                 CompletableFuture.runAsync(() -> {
                     try {
