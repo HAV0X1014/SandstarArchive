@@ -809,7 +809,10 @@ async function adminRequest(method, url, body) {
 async function renderAllArtistsView() {
     app.innerHTML = `
         <div class="page-container">
-            <h1>All Artists</h1>
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px;">
+                <h1>All Artists</h1>
+                <input type="text" id="artistPageSearch" class="input-textarea" style="max-width: 300px; margin: 0;" placeholder="Filter artists by name...">
+            </div>
             <div id="artistsList" class="gallery" style="margin-top: 20px;">
                 <p>Loading artists...</p>
             </div>
@@ -817,22 +820,40 @@ async function renderAllArtistsView() {
 
     try {
         const res = await fetch('/api/artists');
-        const artists = await res.json();
+        const allArtists = await res.json();
 
         const container = document.getElementById('artistsList');
-        if (artists.length === 0) {
-            container.innerHTML = '<p>No artists found.</p>';
-            return;
-        }
+        const searchInput = document.getElementById('artistPageSearch');
 
-        container.innerHTML = artists.map(a => {
-            const url = `/artist/${encodeURIComponent(a.name)}`;
-            return `
-            <a href="${url}" class="post-card" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('${url}'); }" style="padding: 15px; display: block; height: auto; text-decoration: none; color: inherit;">
-                <h3 class="text-primary">${a.name}</h3>
-                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 5px;">${a.description || 'No description provided.'}</p>
-            </a>
-        `}).join('');
+        // Helper function to render a specific list of artists
+        const renderList = (artistsToRender) => {
+            if (artistsToRender.length === 0) {
+                container.innerHTML = '<p>No artists match your search.</p>';
+                return;
+            }
+
+            container.innerHTML = artistsToRender.map(a => {
+                const url = `/artist/${encodeURIComponent(a.name)}`;
+                return `
+                <a href="${url}" class="post-card" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('${url}'); }" style="padding: 15px; display: block; height: auto; text-decoration: none; color: inherit;">
+                    <h3 class="text-primary">${a.name}</h3>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 5px;">${a.description || 'No description provided.'}</p>
+                </a>
+            `}).join('');
+        };
+
+        // Render the full list initially
+        renderList(allArtists);
+
+        // Listen for typing in the search bar and filter instantly
+        searchInput.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            const filteredArtists = allArtists.filter(a =>
+                a.name.toLowerCase().includes(searchTerm)
+            );
+            renderList(filteredArtists);
+        });
+
     } catch (e) {
         document.getElementById('artistsList').innerHTML = '<p>Error loading artists.</p>';
     }
@@ -1034,19 +1055,18 @@ function renderPosts(posts, pageNum, twitterId) {
         gallery.innerHTML = '<p style="padding: 20px;">No more posts available.</p>';
     } else {
         posts.forEach(post => {
-            const card = document.createElement('a');
+            // 1. Change card to a standard <div> rather than an <a> tag
+            const card = document.createElement('div');
             card.className = 'post-card';
-            card.href = `/post/${post.postId}`;
-            card.style.color = 'inherit';
-            card.style.textDecoration = 'none';
 
+            // 2. Adjust the event listener for the wrapper
             card.addEventListener('click', function(e) {
-                if (e.target.closest('select')) {
-                    e.preventDefault();
+                // If they clicked a select, an internal link, or video controls, ignore the general card click
+                if (e.target.closest('select') || e.target.closest('a') || e.target.closest('video')) {
                     return;
                 }
+                // Otherwise, treat a normal click anywhere else on the card as a navigation request
                 if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                    e.preventDefault();
                     navigateTo(`/post/${post.postId}`);
                 }
             });
@@ -1061,18 +1081,22 @@ function renderPosts(posts, pageNum, twitterId) {
                     const fullSrc = `/images/${m.contentRating}/${m.safetyRating}/${localFilename}`;
                     const thumbSrc = `/api/media/${m.id}/thumbnail`;
 
+                    // 3. We wrap the <img> in its own <a> tag so users can still middle-click it.
+                    // We DO NOT wrap the selects. (And we don't wrap videos to prevent breaking their controls).
                     rowHtml += `
                         <div class="card-media-item">
                             ${m.mediaType.includes('mp4') ?
-                                `<video src="${fullSrc}" controls></video>` :
-                                `<img src="${thumbSrc}" loading="lazy" />`
-                            }
+                        `<video src="${fullSrc}" controls></video>` :
+                        `<a href="/post/${post.postId}" style="display: block; width: 100%; height: 100%;" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('/post/${post.postId}'); }">
+                                    <img src="${thumbSrc}" loading="lazy" />
+                                </a>`
+                    }
                             <div class="card-overlay">
                                 ${canWrite() ? `
-                                    <select onchange="updateRating('${m.id}', 'media', 'Content', this.value)" onclick="event.stopPropagation();">
+                                    <select onchange="updateRating('${m.id}', 'media', 'Content', this.value)">
                                         ${generateOptionsHtml('Content', m.contentRating)}
                                     </select>
-                                    <select onchange="updateRating('${m.id}', 'media', 'Safety', this.value)" style="margin-left: 4px;" onclick="event.stopPropagation();">
+                                    <select onchange="updateRating('${m.id}', 'media', 'Safety', this.value)" style="margin-left: 4px;">
                                         ${generateOptionsHtml('Safety', m.safetyRating)}
                                     </select>
                                 ` : `${m.contentRating} / ${m.safetyRating}`}
@@ -1082,21 +1106,24 @@ function renderPosts(posts, pageNum, twitterId) {
                 mediaGrid += `<div class="card-media-row">${rowHtml}</div>`;
             }
 
+            // 4. We do the same inner wrap for the header/caption.
             card.innerHTML = `
                 <div class="card-media-grid">${mediaGrid}</div>
                 <div class="card-footer">
-                    <div class="card-header">
-                        <div class="card-author">${post.screenName}</div>
-                        <div class="card-date">${new Date(post.postDate * 1000).toLocaleDateString()}</div>
-                    </div>
-                    <div class="card-caption">${post.postText || ''}</div>
+                    <a href="/post/${post.postId}" style="text-decoration: none; color: inherit; display: block;" onclick="if(event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey) { event.preventDefault(); navigateTo('/post/${post.postId}'); }">
+                        <div class="card-header">
+                            <div class="card-author">${post.screenName}</div>
+                            <div class="card-date">${new Date(post.postDate * 1000).toLocaleDateString()}</div>
+                        </div>
+                        <div class="card-caption">${post.postText || ''}</div>
+                    </a>
                     ${canWrite() ? `
                         <div class="card-rating">
                             <span>Post Rating:</span>
-                            <select onchange="updateRating('${post.postId}', 'post', 'Content', this.value)" onclick="event.stopPropagation();">
+                            <select onchange="updateRating('${post.postId}', 'post', 'Content', this.value)">
                                 ${generateOptionsHtml('Content', post.contentRating)}
                             </select>
-                            <select onchange="updateRating('${post.postId}', 'post', 'Safety', this.value)" onclick="event.stopPropagation();">
+                            <select onchange="updateRating('${post.postId}', 'post', 'Safety', this.value)">
                                 ${generateOptionsHtml('Safety', post.safetyRating)}
                             </select>
                         </div>
