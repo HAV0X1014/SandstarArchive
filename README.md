@@ -1,7 +1,7 @@
 # Archive art from Twitter.
 This project relies on [c8ff/twitter-scraper-java](https://github.com/c8ff/twitter-scraper-java) to scrape data from Twitter. You should be mindful of what your account is doing and the risks from using a program like this!
 
-# !!!THIS PROJECT IS IN ACTIVE DEVELOPMENT AND THE DATABASE SCHEMA **WILL** CHANGE!!!
+## Database schema is mostly stable. Breaking changes may still occur.
 Any database schema changes will make the old database incompatible with new versions of the program. I am still editing and refining what I want this archive to be like, so **please** do not store vital data with this yet.
 
 ## Usage
@@ -22,11 +22,12 @@ Copy the whole value of `Cookie` to the account.json file where it says "cookie"
 As of now, the web frontend/API is mostly AI coded. I really don't like doing frontend work - JavaScript and web languages are painful. The HTML, CSS, and JavaScript files are in `public/` and can be edited while the program is running! Any API changes will require a recompile and restart of the program, however. As of now it is just a very good example implementation of the functionality the site will need to have. Any rewrites to the web/API will be very well accepted.
 
 ## Notes and known issues
+- Some posts don't send to Discord.
+  - Mostly large videos and images above the filesize limit, but it also happens randomly. I am investigating this.
 - You can have up to 5 Content and Safety ratings.
   - This is due to Discord only allowing 5 buttons per row.
 - Discord is not an ideal frontend.
   - The website frontend should replace Discord's frontend soon. I am not making any "hacks" for Discord that would otherwise hinder development of the web frontend.
 - Edit ratelimits in Discord threads are immensely strict after a post has been up for 1 hour.
   - Threads were chosen because a server can have up to 1000 active threads and unlimited archived threads. It is unlikely that anyone will hit these limits, as compared to channel limits.
-- "ChannelsForSafetyRatings" in the config is currently not used, and all posts are sent to "RawFeedChannel"
 - A proper logging setup should be implemented.
