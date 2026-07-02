@@ -18,16 +18,19 @@ Go to x.com, inspect element, and go to the 'Network' tab at the top of the insp
 
 Copy the whole value of `Cookie` to the account.json file where it says "cookie". From the same request, copy over the `User-Agent`, `Authorization` and the value  of `X-Csrf-Token` to the account.json file.
 
+## Discord frontend
+Read [discord-usage.md](./discord-usage.md) for a guide on how to set up a Discord server for Sandstar archive. Additionally there is documentation of how to use the slash commands it provides.
+
 ## Website/API
 As of now, the web frontend/API is mostly AI coded. I really don't like doing frontend work - JavaScript and web languages are painful. The HTML, CSS, and JavaScript files are in `public/` and can be edited while the program is running! Any API changes will require a recompile and restart of the program, however. As of now it is just a very good example implementation of the functionality the site will need to have. Any rewrites to the web/API will be very well accepted.
 
+Additionally, there is API documentation at [api-documentation.md](./api-documentation.md) if you are interested in creating an external frontend app for Sandstar or a bot.
+
 ## Notes and known issues
-- Some posts don't send to Discord.
-  - Mostly large videos and images above the filesize limit, but it also happens randomly. I am investigating this.
 - You can have up to 5 Content and Safety ratings.
   - This is due to Discord only allowing 5 buttons per row.
 - Discord is not an ideal frontend.
-  - The website frontend should replace Discord's frontend soon. I am not making any "hacks" for Discord that would otherwise hinder development of the web frontend.
+  - The website is the preferred frontend. It is more feature complete and has many more tools than Discord, however it is still a work in progress.
 - Edit ratelimits in Discord threads are immensely strict after a post has been up for 1 hour.
   - Threads were chosen because a server can have up to 1000 active threads and unlimited archived threads. It is unlikely that anyone will hit these limits, as compared to channel limits.
 - A proper logging setup should be implemented.
