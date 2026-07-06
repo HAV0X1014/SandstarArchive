@@ -4,14 +4,13 @@ import io.github.yuvraj0028.models.HashType;
 import io.github.yuvraj0028.service.ImageSimilarityService;
 import io.javalin.Javalin;
 import io.javalin.config.SizeUnit;
-import io.javalin.http.Context;
-import io.javalin.http.Handler;
-import io.javalin.http.UploadedFile;
+import io.javalin.http.*;
 import io.javalin.http.staticfiles.Location;
 import katworks.database.DatabaseHandler;
 import katworks.impl.*;
 import katworks.twitter.TwitterScraper;
 import katworks.util.ExtractPostId;
+import org.mindrot.jbcrypt.BCrypt;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -24,6 +23,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -33,7 +34,7 @@ import static katworks.Main.config;
 
 public class WebServer {
 
-    private static final java.security.SecureRandom secureRandom = new java.security.SecureRandom();
+    private static final SecureRandom secureRandom = new SecureRandom();
 
     private static String generateSessionToken() {
         byte[] randomBytes = new byte[32];
@@ -53,9 +54,9 @@ public class WebServer {
     // Helper for generating proper external URLs for OpenGraph tags
     private static String getMediaUrl(String host, TwitterMedia m) {
         try {
-            String encodedContent = java.net.URLEncoder.encode(m.contentRating, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
-            String encodedSafety = java.net.URLEncoder.encode(m.safetyRating, java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
-            String encodedFile = java.net.URLEncoder.encode(Paths.get(m.localPath).getFileName().toString(), java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+            String encodedContent = URLEncoder.encode(m.contentRating, StandardCharsets.UTF_8).replace("+", "%20");
+            String encodedSafety = URLEncoder.encode(m.safetyRating, StandardCharsets.UTF_8).replace("+", "%20");
+            String encodedFile = URLEncoder.encode(Paths.get(m.localPath).getFileName().toString(), StandardCharsets.UTF_8).replace("+", "%20");
             return host + "/images/" + encodedContent + "/" + encodedSafety + "/" + encodedFile;
         } catch (Exception e) {
             return host + "/api/media/" + m.id + "/thumbnail"; // safe fallback
@@ -96,6 +97,8 @@ public class WebServer {
                                 path.startsWith("/api/accounts") ||
                                 path.startsWith("/api/artists") ||
                                 path.startsWith("/api/media") ||
+                                path.startsWith("/api/v1/statuses/") ||
+                                path.startsWith("/users/") ||
                                 path.equals("/api/config")
                 );
 
@@ -126,7 +129,7 @@ public class WebServer {
 
                 // 6. PROTECTED ROUTES: Enforce login requirement
                 if (session == null) {
-                    throw new io.javalin.http.UnauthorizedResponse("Unauthorized: Missing, invalid, or expired token.");
+                    throw new UnauthorizedResponse("Unauthorized: Missing, invalid, or expired token.");
                 }
 
                 // 7. RBAC Authorization for protected routes
@@ -140,13 +143,13 @@ public class WebServer {
                 if (path.startsWith("/api/accounts") || path.startsWith("/api/tasks") || path.startsWith("/api/artists") ||
                         path.startsWith("/api/keys") || path.startsWith("/api/users")) {
                     if (userLevel < 3) {
-                        throw new io.javalin.http.ForbiddenResponse("Forbidden: Execute access required.");
+                        throw new ForbiddenResponse("Forbidden: Execute access required.");
                     }
                 }
                 // Editor endpoints
                 else if (path.startsWith("/api/media") || path.startsWith("/api/posts")) {
                     if (userLevel < 2) {
-                        throw new io.javalin.http.ForbiddenResponse("Forbidden: Editor access required.");
+                        throw new ForbiddenResponse("Forbidden: Editor access required.");
                     }
                 }
             });
@@ -341,7 +344,7 @@ public class WebServer {
                 String username = req.get("username");
                 String email = req.get("email");
                 String password = req.get("password");
-                String inviteKey = req.get("inviteKey"); // Optional
+                String inviteKey = req.get("inviteKey");
 
                 if (username == null || password == null || password.length() < 6) {
                     ctx.status(400).json(Map.of("success", false, "error", "Invalid username or password (min 6 chars)"));
@@ -364,11 +367,11 @@ public class WebServer {
 
                 ArchiveUser user = DatabaseHandler.getUserByIdentifier(identifier);
 
-                if (user != null && !user.banned && org.mindrot.jbcrypt.BCrypt.checkpw(password, user.passwordHash)) {
+                if (user != null && !user.banned && BCrypt.checkpw(password, user.passwordHash)) {
 
                     // Expiration: 3 Months (Approx 90 Days)
                     long secondsInThreeMonths = 90L * 24 * 60 * 60;
-                    long expiresAt = java.time.Instant.now().getEpochSecond() + secondsInThreeMonths;
+                    long expiresAt = Instant.now().getEpochSecond() + secondsInThreeMonths;
 
                     // Fetch existing token if already available, or construct a new persistent one
                     String token = DatabaseHandler.getOrCreateUserToken(user.id, expiresAt);
@@ -757,8 +760,8 @@ public class WebServer {
                         authorUrl = baseUrl + "/post/" + post.postId; // always link to post URL
 
                     }
-                } catch (Exception ignored) {
-                    // invalid URL → fallback to generic embed
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
 
                 if (account != null) {
@@ -779,18 +782,18 @@ public class WebServer {
                 String fullAuthorName = authorName + " (@" + screenName + ")";
 
                 Map<String, Object> oembed = new LinkedHashMap<>();
-                oembed.put("version", "1.0");
                 oembed.put("type", "rich");
-                // Intentionally omitting "title" to prevent an unneeded bold blue link above the author
+                oembed.put("version", "1.0");
+                oembed.put("title","Embed");
                 oembed.put("author_name", fullAuthorName);
                 oembed.put("author_url", authorUrl);
                 oembed.put("provider_name", "Sandstar Archive");
                 oembed.put("provider_url", baseUrl);
-                oembed.put("description", description);
-                oembed.put("width", 550);
-                oembed.put("height", 400);
+                //oembed.put("description", description);
+                //oembed.put("width", 550);
+                //oembed.put("height", 400);
 
-                ctx.contentType("application/json+oembed");
+                ctx.contentType("application/json");
                 ctx.json(oembed);
             });
 
@@ -800,8 +803,8 @@ public class WebServer {
             });
 
             //figgy.routes.get("/activity/{id}", WebServer::serveActivityPub);
-            figgy.routes.get("/activity/{id}", WebServer::serveActivityPubPost);
-            figgy.routes.get("/activity/users/{screenName}", WebServer::serveActivityPubUser);
+            figgy.routes.get("/api/v1/statuses/{id}", WebServer::serveActivityPubPost);
+            figgy.routes.get("/users/{handle}/statuses/{id}", WebServer::serveActivityPubPost);
         }).start(config.port);
 
         System.out.println("Web Interface started at http://localhost:" + config.port);
@@ -846,7 +849,7 @@ public class WebServer {
         activity.put("content", desc);
 
         if (post.postDate > 0) {
-            activity.put("published", java.time.Instant.ofEpochSecond(post.postDate).toString());
+            activity.put("published", Instant.ofEpochSecond(post.postDate).toString());
         }
 
         // Attach all images/videos
@@ -890,7 +893,7 @@ public class WebServer {
 
         TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
         String hostUrl = ctx.scheme() + "://" + ctx.host();
-        String screenName = account != null ? account.screenName : "unknown";
+        String postUrl = hostUrl + "/post/" + postId;
 
         String desc = post.postText != null ? escapeHtml(post.postText) : "";
         if (!desc.isEmpty()) desc += "<br><br>";
@@ -898,28 +901,72 @@ public class WebServer {
         desc = desc.replace("\n", "<br>");
 
         Map<String, Object> activity = new LinkedHashMap<>();
+        Map<String, Object> application = new LinkedHashMap<>();
+        Map<String, Object> accountMastodon = new LinkedHashMap<>();
 
         // Rule 1: Context must be an array mimicking Mastodon
-        activity.put("@context", List.of(
+        /*activity.put("@context", List.of(
                 "https://www.w3.org/ns/activitystreams",
                 Map.of("sensitive", "as:sensitive")
         ));
-
-        activity.put("type", "Note");
-        activity.put("id", hostUrl + "/activity/" + postId);
+        */
+        //activity.put("type", "Note");
+        activity.put("id", postId);
         activity.put("url", hostUrl + "/post/" + postId);
+        activity.put("uri", hostUrl + "/post/" + postId);
+        //if (post.postDate > 0) {
+            activity.put("created_at", Instant.ofEpochSecond(post.postDate).toString());
+        //}
+        activity.put("edited_at",null);
+        activity.put("reblog",null);
+        activity.put("in_reply_to_id",null);
+        activity.put("in_reply_to_account_id",null);
+        activity.put("language","en");
+        activity.put("content", desc);
+        activity.put("spoiler_text","");
+        activity.put("visibility","public");
+
+        application.put("name","Sandstar Archive");
+        application.put("website",null);
+        activity.put("application",application);
 
         // Rule 2: attributedTo MUST be a URL, not an object.
-        activity.put("attributedTo", hostUrl + "/activity/users/" + screenName);
+        //activity.put("attributedTo", hostUrl + "/activity/users/" + screenName);
 
         // FxTwitter includes these explicitly
-        activity.put("summary", null);
-        activity.put("sensitive", "NSFW".equalsIgnoreCase(post.safetyRating)); // True if NSFW
-        activity.put("content", desc);
-
-        if (post.postDate > 0) {
-            activity.put("published", java.time.Instant.ofEpochSecond(post.postDate).toString());
-        }
+        //activity.put("summary", null);
+        //activity.put("sensitive", "NSFW".equalsIgnoreCase(post.safetyRating)); // True if NSFW
+        accountMastodon.put("id","456");
+        accountMastodon.put("display_name",account.displayName);
+        accountMastodon.put("username",account.screenName + ")");
+        accountMastodon.put("acct",account.screenName);
+        accountMastodon.put("url",postUrl);
+        accountMastodon.put("uri",postUrl);
+        accountMastodon.put("created_at","0");
+        accountMastodon.put("locked",false);
+        accountMastodon.put("bot",false);
+        accountMastodon.put("discoverable",true);
+        accountMastodon.put("indexable",false);
+        accountMastodon.put("group",false);
+        //accountMastodon.put("avatar","https://cdn.discordapp.com/attachments/1100888255483875428/1159591754538942514/genbaneko_transparent.png");
+        //accountMastodon.put("avatar_static","https://cdn.discordapp.com/attachments/1100888255483875428/1159591754538942514/genbaneko_transparent.png");
+        //accountMastodon.put("header","https://cdn.discordapp.com/attachments/1100888255483875428/1159591754538942514/genbaneko_transparent.png");
+        //accountMastodon.put("header_static","https://cdn.discordapp.com/attachments/1100888255483875428/1159591754538942514/genbaneko_transparent.png");
+        accountMastodon.put("followers_number",0);
+        accountMastodon.put("following_count",0);
+        accountMastodon.put("statuses_count",0);
+        accountMastodon.put("hide_collections",false);
+        accountMastodon.put("noindex",false);
+        accountMastodon.put("emojis",List.of());
+        accountMastodon.put("roles",List.of());
+        accountMastodon.put("fields",List.of());
+        activity.put("account",accountMastodon);
+        activity.put("media_attachments",List.of());
+        activity.put("mentions",List.of());
+        activity.put("tags",List.of());
+        activity.put("emojis",List.of());
+        activity.put("card",null);
+        activity.put("poll",null);
 
         List<Map<String, Object>> attachments = new ArrayList<>();
         if (post.media != null) {
@@ -927,21 +974,50 @@ public class WebServer {
                 if (m.localPath == null) continue;
 
                 String mediaUrl = getMediaUrl(hostUrl, m);
-                String mimeType = (m.mediaType != null && m.mediaType.contains("mp4")) ? "video/mp4" : "image/jpeg";
 
-                Map<String, Object> att = new LinkedHashMap<>();
-                att.put("type", "Document");
-                att.put("mediaType", mimeType);
-                att.put("url", mediaUrl);
-                if (m.caption != null && !m.caption.isEmpty()) {
-                    att.put("name", m.caption);
+                if (m.mediaType.equalsIgnoreCase("png") || m.mediaType.equalsIgnoreCase("jpg")) {
+                    Map<String, Object> att = new LinkedHashMap<>();
+                    Map<String, Object> meta = new LinkedHashMap<>();
+                    Map<String, Object> original = new LinkedHashMap<>();
+                    att.put("id", String.valueOf(m.mediaIndex));
+                    att.put("type", "image");
+                    att.put("url", mediaUrl);
+                    att.put("preview_url", null);
+                    att.put("preview_remote_url", null);
+                    att.put("text_url", null);
+                    att.put("description", m.caption);
+                    original.put("width", 1200);
+                    original.put("height", 800);
+                    original.put("size", "1200x800");
+                    original.put("aspect", 1.5);
+                    meta.put("original", original);
+                    att.put("meta", meta);
+                    attachments.add(att);
+                } else {
+                    Map<String, Object> att = new LinkedHashMap<>();
+                    Map<String, Object> meta = new LinkedHashMap<>();
+                    Map<String, Object> original = new LinkedHashMap<>();
+                    att.put("id", String.valueOf(m.mediaIndex));
+                    att.put("type", "video");
+                    att.put("url", mediaUrl);
+                    //att.put("remote_url",mediaUrl);
+                    att.put("preview_url","https://cdn.discordapp.com/attachments/1100888255483875428/1159591754538942514/genbaneko_transparent.png");
+                    att.put("preview_remote_url",null);
+                    att.put("text_url",null);
+                    att.put("description", m.caption);
+                    original.put("width", 1280);
+                    original.put("height", 720);
+                    original.put("size", "1280x720");
+                    original.put("aspect", 1.778);
+                    meta.put("original", original);
+                    att.put("meta", meta);
+                    attachments.add(att);
                 }
-                attachments.add(att);
             }
         }
 
         if (!attachments.isEmpty()) {
-            activity.put("attachment", attachments);
+            activity.put("media_attachments", attachments);
         }
 
         ctx.contentType("application/activity+json; charset=utf-8");
@@ -1002,8 +1078,10 @@ public class WebServer {
         String screenName = account != null ? account.screenName : "unknown";
 
         og.append("<meta property=\"og:site_name\" content=\"Sandstar Archive\" />\n");
-        og.append("<meta name=\"twitter:site\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
-        og.append("<meta name=\"twitter:creator\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
+        og.append("<meta name=\"og:title\" content=\"" + account.displayName + "(@" + account.screenName + ")\" />\n");
+        og.append("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
+        //og.append("<meta name=\"twitter:site\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
+        //og.append("<meta name=\"twitter:creator\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
 
         String desc = "";
         if (singleMedia != null) {
@@ -1017,16 +1095,16 @@ public class WebServer {
         }
 
         og.append("<meta property=\"og:description\" content=\"").append(escapeHtml(desc)).append("\" />\n");
-        og.append("<meta name=\"twitter:description\" content=\"").append(escapeHtml(desc)).append("\" />\n");
+        //og.append("<meta name=\"twitter:description\" content=\"").append(escapeHtml(desc)).append("\" />\n");
 
-        if (post != null && post.postDate > 0) {
-            String isoDate = java.time.Instant.ofEpochSecond(post.postDate).toString();
+        /*if (post != null && post.postDate > 0) {
+            String isoDate = Instant.ofEpochSecond(post.postDate).toString();
             og.append("<meta property=\"article:published_time\" content=\"").append(isoDate).append("\" />\n");
-        }
+        }*/
 
         //og.append("<meta property=\"og:type\" content=\"article\" />\n");
         og.append("<meta name=\"theme-color\" content=\"#1DA1F2\" />\n");
-
+/*
         List<TwitterMedia> mediaList = singleMedia != null ? List.of(singleMedia) :
                 (post != null && post.media != null ? post.media : Collections.emptyList());
 
@@ -1071,20 +1149,17 @@ public class WebServer {
         } else {
             og.append("<meta name=\"twitter:card\" content=\"summary\" />\n");
         }
-
+*/
         // oEmbed discovery link
-        // oEmbed discovery link (Keep this for Telegram/Slack)
         String pageUrl = hostUrl + ctx.path();
         String encodedPageUrl = URLEncoder.encode(pageUrl, StandardCharsets.UTF_8);
-        String oembedLink = "<link rel=\"alternate\" type=\"application/json+oembed\" href=\"" +
-                hostUrl + "/oembed?url=" + encodedPageUrl +
-                "\" title=\"Sandstar Archive\" />\n";
+        String oembedLink = "<link rel=\"alternate\" type=\"application/json+oembed\" href=\"/oembed?url=" + encodedPageUrl + "\" title=\"Sandstar Archive\" />\n";
         og.append(oembedLink);
 
-        // --- NEW: FAKE MASTODON ACTIVITYPUB LINK FOR DISCORD ---
+        //mastodon v1/activitypub spoof links
         String targetId = singleMedia != null ? singleMedia.postId : (post != null ? post.postId : "");
-        String activityPubLink = "<link rel=\"alternate\" type=\"application/activity+json\" href=\"" +
-                hostUrl + "/activity/" + targetId + "\" />\n";
+        String activityPubLink = "<link href=\"/users/ThisDoesntMatter/statuses/" + post.postId + "\" rel=\"alternate\" type=\"application/activity+json\"/>\n" +
+                "<link href=\"/api/v1/statuses/" + targetId + "\" rel=\"alternate\" type=\"application/activity+json\"/>\n";
         og.append(activityPubLink);
 
         html = html.replace("</head>", og.toString() + "</head>");

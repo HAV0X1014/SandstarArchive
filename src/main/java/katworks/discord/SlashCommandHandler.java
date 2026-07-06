@@ -230,8 +230,8 @@ public class SlashCommandHandler extends ListenerAdapter {
         DatabaseHandler.registerAccount(profile.twitterId, profile.screenName, profile.displayName, profile.screenName, false, null);
 
         // Create the Discord Thread
-        TextChannel forum = jda.getTextChannelById(config.accountsChannel);
-        ThreadChannel newThread = forum.createThreadChannel(profile.screenName + " @" + profile.screenName).complete();
+        TextChannel accountsChannel = jda.getTextChannelById(config.accountsChannel);
+        ThreadChannel newThread = accountsChannel.createThreadChannel(profile.screenName + " @" + profile.screenName).complete();
 
         DatabaseHandler.setDiscordThreadId(profile.twitterId, newThread.getId());
         Thread.sleep(30); //very small sleep so the write goes through - race condition fix?

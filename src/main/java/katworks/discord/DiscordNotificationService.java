@@ -15,12 +15,11 @@ import net.dv8tion.jda.api.utils.FileUpload;
 import java.io.File;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static katworks.Main.config;
-import static katworks.discord.DiscordMain.feedChannel;
-import static katworks.discord.DiscordMain.feedSafetyChannelMap;
-import static katworks.discord.DiscordMain.jda;
+import static katworks.discord.DiscordMain.*;
 
 public class DiscordNotificationService {
     public static void sendNewPostNotification(TwitterPost post, TwitterAccount account) {
@@ -35,8 +34,8 @@ public class DiscordNotificationService {
         String originalUrl = "https://x.com/i/status/" + post.postId;
 
         //send to artist thread first to get file links and jump url
-        ThreadChannel thread = jda.getThreadChannelById(account.discordThreadId);
-        if (thread != null) {
+        //ThreadChannel thread = jda.getThreadChannelById(account.discordThreadId);
+        artistThreadCache.getThread(Long.parseLong(account.discordThreadId), thread -> {
             EmbedBuilder threadEmbed = new EmbedBuilder()
                     .setAuthor(account.screenName, originalUrl)
                     .setDescription(post.postText)
@@ -49,8 +48,11 @@ public class DiscordNotificationService {
                     .queue(threadMsg -> {
                         //pass the sent message to the feed processor to get info from it
                         sendToRawFeed(post, account, threadMsg);
-                    });
-        }
+                    }, error -> SendStatusMessage.sendMessage("Error when sending to Discord (artist thread <#" + account.discordThreadId + ":\n" + Arrays.toString(error.getStackTrace())));
+        }, error -> {
+            SendStatusMessage.sendMessage("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);
+            System.err.println("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);
+        });
     }
 
     private static void sendToRawFeed(TwitterPost post, TwitterAccount account, Message threadMsg) {

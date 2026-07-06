@@ -19,7 +19,6 @@ public class Config {
     public boolean discordEnabled; //if the Discord bot frontend should be enabled.
     public String botToken; //the discord bot token.
     public String serverID; //the ID of the server we are using as our frontend.
-    public String rawFeedChannel;
     public ArrayList<String> channelsForSafetyRatings = new ArrayList<>(); //the corresponding channelIDs for each of the contentRatings.
     public String rejectedChannel; //the channel ID for rejected images.
     public String statusChannel; //the channel ID to send status updates and errors to.
@@ -93,7 +92,6 @@ public class Config {
         config.discordEnabled = discordConfig.getBoolean("Enabled");
         config.botToken = discordConfig.getString("BotToken");
         config.serverID = discordConfig.getString("ServerID");
-        config.rawFeedChannel = discordConfig.getString("RawFeedChannel");
         for (int cs = 0; cs < discordConfig.getJSONArray("ChannelsForSafetyRatings").length(); cs++) {
             config.channelsForSafetyRatings.add(discordConfig.getJSONArray("ChannelsForSafetyRatings").getString(cs));
         }

@@ -19,11 +19,11 @@ import static katworks.Main.config;
 public class DiscordMain {
     public static JDA jda;
     public static String self;
-    public static TextChannel feedChannel;
     public static Map<String,TextChannel> feedSafetyChannelMap = new HashMap<>();
     public static TextChannel rejectedChannel;
     public static TextChannel statusChannel;
     public static Role allowedRole;
+    public static ArtistThreadCache artistThreadCache;
 
     public void start() {
         try {
@@ -44,8 +44,8 @@ public class DiscordMain {
                 feedSafetyChannelMap.put(config.safetyRatings.get(i),jda.getTextChannelById(config.channelsForSafetyRatings.get(i)));
             }
             rejectedChannel = jda.getTextChannelById(config.rejectedChannel);
-            feedChannel = jda.getTextChannelById(config.rawFeedChannel);
             allowedRole = jda.getRoleById(config.allowedUsersRoleID);
+            artistThreadCache = new ArtistThreadCache(jda);
         } catch (InterruptedException e) {
             throw new RuntimeException(e);
         }
@@ -84,7 +84,7 @@ public class DiscordMain {
                 .addOptions(accountSafetyOptions));
 
         cd.add(Commands.slash("accountinfo","Retrieve account info from the database.")
-                .addOption(OptionType.STRING,"screenname","The @name of the account."));
+                .addOption(OptionType.STRING,"screenname","The @name of the account.",true));
 
         cd.add(Commands.slash("downloadpost","Download a single post. Makes new account & artist entry if not already present.")
                 .addOption(OptionType.STRING,"url","The URL of the tweet to download.",true)
@@ -92,7 +92,7 @@ public class DiscordMain {
                 .addOptions(postSafetyOptions)
                 /*.addOption(OptionType.STRING,"artistname","The name of the artist if they do not exist yet.",false)*/);
 
-        cd.add(Commands.slash("gettwitteraccountinfo","Look up account info by twitter @name.")
+        cd.add(Commands.slash("gettwitteraccountinfo","Scrape account info by twitter @name. (Does not use db)")
                 .addOption(OptionType.STRING,"screenname","The @name of the account.",true));
 
         cd.add(Commands.slash("editaccount","Set twitter account info to the desired values.")

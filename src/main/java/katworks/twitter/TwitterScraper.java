@@ -107,6 +107,7 @@ public class TwitterScraper {
                             JSONObject entry = entries.getJSONObject(e);
 
                             // 1. HANDLE DATA
+                            //account for first scrape JSON response and second scrape JSON
                             JSONArray itemsToProcess = null;
                             if (entry.has("items")) {
                                 itemsToProcess = entry.getJSONArray("items");
@@ -117,7 +118,7 @@ public class TwitterScraper {
                             if (itemsToProcess != null && itemsToProcess.length() > 0) {
                                 itemsFoundInThisRequest = true;
 
-                                for (int j = 0; j < itemsToProcess.length(); j++) {
+                                for (int j = 0; j < itemsToProcess.length(); j++) { //loop over posts found
                                     JSONObject item = itemsToProcess.getJSONObject(j);
                                     String itemId = item.optString("id", null);
                                     if (itemId == null) continue;
