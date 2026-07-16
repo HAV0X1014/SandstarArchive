@@ -3,8 +3,8 @@ package katworks.impl;
 import java.util.List;
 
 public class TwitterPost {
-    public String postId; ///Post's ID snowflake from twitter.///
-    public String screenName;
+    public String postId; ///Post's ID snowflake from twitter.
+    public String screenName; ///Artist's @name from twitter
     public String twitterId; ///Artist's user ID snowflake from twitter.
     public String postText; ///Original post's text.
     public long postDate; ///Unix timestamp of the original post in GMT.

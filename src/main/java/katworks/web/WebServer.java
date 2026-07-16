@@ -306,17 +306,17 @@ public class WebServer {
                         return;
                     }
 
-                    int targetWidth = 400;
+                    int shrink = 2;
                     int origW = original.getWidth();
                     int origH = original.getHeight();
                     byte[] responseData;
 
-                    if (origW > targetWidth) {
-                        int targetHeight = (origH * targetWidth) / origW;
-                        BufferedImage thumb = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_RGB);
+                    if (origW > 400) {
+                        //int targetHeight = (origH * targetWidth) / origW;
+                        BufferedImage thumb = new BufferedImage(origW / shrink, origH / shrink, BufferedImage.TYPE_INT_RGB);
                         Graphics2D g2d = thumb.createGraphics();
                         g2d.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                        g2d.drawImage(original, 0, 0, targetWidth, targetHeight, null);
+                        g2d.drawImage(original, 0, 0, origW / shrink, origH / shrink, null);
                         g2d.dispose();
 
                         ByteArrayOutputStream baos = new ByteArrayOutputStream();
@@ -803,119 +803,68 @@ public class WebServer {
             });
 
             //figgy.routes.get("/activity/{id}", WebServer::serveActivityPub);
-            figgy.routes.get("/api/v1/statuses/{id}", WebServer::serveActivityPubPost);
-            figgy.routes.get("/users/{handle}/statuses/{id}", WebServer::serveActivityPubPost);
+            figgy.routes.get("/api/v1/statuses/{id}", WebServer::serveActivityPub);
+            figgy.routes.get("/users/{handle}/statuses/{id}", WebServer::serveActivityPub);
         }).start(config.port);
 
         System.out.println("Web Interface started at http://localhost:" + config.port);
     }
 
     public static void serveActivityPub(Context ctx) {
-        String postId = ctx.pathParam("id");
-        TwitterPost post = DatabaseHandler.getPostDetails(postId);
-
-        if (post == null) {
-            ctx.status(404).result("Post not found");
-            return;
-        }
-
-        TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
+        String targetId = ctx.pathParam("id");
         String hostUrl = ctx.scheme() + "://" + ctx.host();
+        String desc = "";
+        String contentRating = "";
+        String safetyRating = "";
+        String sourceUrl = "";
+        long postDate;
+        List<TwitterMedia> postMedia;
+        TwitterAccount account;
 
-        // Map the Author
-        String screenName = account != null ? account.screenName : "unknown";
-        String displayName = (account != null && account.displayName != null && !account.displayName.isEmpty()) ? account.displayName : screenName;
+        //try to resolve the ID we are looking up for discord as a post first
+        TwitterPost post = DatabaseHandler.getPostDetails(targetId);
 
-        Map<String, Object> attributedTo = new LinkedHashMap<>();
-        attributedTo.put("type", "Person");
-        attributedTo.put("id", hostUrl + "/users/" + screenName);
-        attributedTo.put("name", displayName);
-        attributedTo.put("preferredUsername", screenName);
+        //if that fails, look it up as a media id
+        if (post != null) {
+            sourceUrl = hostUrl + "/post/" + targetId;
+            desc = post.postText != null ? escapeHtml(post.postText) : "";
+            contentRating = post.contentRating;
+            safetyRating = post.safetyRating;
+            account = DatabaseHandler.getAccountById(post.twitterId);
+            postDate = post.postDate;
+            postMedia = post.media;
+        } else {
+            TwitterMedia media = DatabaseHandler.getMediaById(Integer.parseInt(targetId));
+            sourceUrl = hostUrl + "/media/" + targetId;
+            desc = media.caption != null ? escapeHtml(media.caption) : "";
+            contentRating = media.contentRating;
+            safetyRating = media.safetyRating;
+            TwitterPost postTemp = DatabaseHandler.getPostDetails(media.postId);
+            postDate = postTemp.postDate;
+            account = DatabaseHandler.getAccountById(postTemp.twitterId);
+            postMedia = Collections.singletonList(media);
+        }
+        //TODO: 404 on media and post resolve fail.
 
-        // Format the Content (Discord's Mastodon parser uses HTML for text)
-        String desc = post.postText != null ? escapeHtml(post.postText) : "";
         if (!desc.isEmpty()) desc += "<br><br>";
-        desc += "Rating: " + post.contentRating + " / " + post.safetyRating;
-        // ActivityPub line breaks MUST be <br>
-        desc = desc.replace("\n", "<br>");
-
-        // Build the main Note
-        Map<String, Object> activity = new LinkedHashMap<>();
-        activity.put("@context", "https://www.w3.org/ns/activitystreams");
-        activity.put("type", "Note");
-        activity.put("id", hostUrl + "/post/" + postId);
-        activity.put("url", hostUrl + "/post/" + postId);
-        activity.put("attributedTo", attributedTo);
-        activity.put("content", desc);
-
-        if (post.postDate > 0) {
-            activity.put("published", Instant.ofEpochSecond(post.postDate).toString());
-        }
-
-        // Attach all images/videos
-        List<Map<String, Object>> attachments = new ArrayList<>();
-        if (post.media != null) {
-            for (TwitterMedia m : post.media) {
-                if (m.localPath == null) continue;
-
-                String mediaUrl = getMediaUrl(hostUrl, m);
-                String mimeType = (m.mediaType != null && m.mediaType.contains("mp4")) ? "video/mp4" : "image/jpeg";
-
-                Map<String, Object> att = new LinkedHashMap<>();
-                att.put("type", "Document"); // Mastodon uses "Document" for media
-                att.put("mediaType", mimeType);
-                att.put("url", mediaUrl);
-
-                if (m.caption != null && !m.caption.isEmpty()) {
-                    att.put("name", m.caption); // Alt text
-                }
-                attachments.add(att);
-            }
-        }
-
-        if (!attachments.isEmpty()) {
-            activity.put("attachment", attachments);
-        }
-
-        // Serve as application/activity+json
-        ctx.contentType("application/activity+json");
-        ctx.json(activity);
-    }
-
-    public static void serveActivityPubPost(Context ctx) {
-        String postId = ctx.pathParam("id");
-        TwitterPost post = DatabaseHandler.getPostDetails(postId);
-
-        if (post == null) {
-            ctx.status(404).result("Post not found");
-            return;
-        }
-
-        TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
-        String hostUrl = ctx.scheme() + "://" + ctx.host();
-        String postUrl = hostUrl + "/post/" + postId;
-
-        String desc = post.postText != null ? escapeHtml(post.postText) : "";
-        if (!desc.isEmpty()) desc += "<br><br>";
-        desc += "<b>Rating: " + post.contentRating + " / " + post.safetyRating + "</b>";
+        desc += "<b>Rating: " + contentRating + " / " + safetyRating + "</b>";
         desc = desc.replace("\n", "<br>");
 
         Map<String, Object> activity = new LinkedHashMap<>();
         Map<String, Object> application = new LinkedHashMap<>();
         Map<String, Object> accountMastodon = new LinkedHashMap<>();
 
-        // Rule 1: Context must be an array mimicking Mastodon
         /*activity.put("@context", List.of(
                 "https://www.w3.org/ns/activitystreams",
                 Map.of("sensitive", "as:sensitive")
         ));
         */
         //activity.put("type", "Note");
-        activity.put("id", postId);
-        activity.put("url", hostUrl + "/post/" + postId);
-        activity.put("uri", hostUrl + "/post/" + postId);
+        activity.put("id",targetId);
+        activity.put("url",sourceUrl);
+        activity.put("uri",sourceUrl);
         //if (post.postDate > 0) {
-            activity.put("created_at", Instant.ofEpochSecond(post.postDate).toString());
+            activity.put("created_at", Instant.ofEpochSecond(postDate).toString());
         //}
         activity.put("edited_at",null);
         activity.put("reblog",null);
@@ -929,8 +878,6 @@ public class WebServer {
         application.put("name","Sandstar Archive");
         application.put("website",null);
         activity.put("application",application);
-
-        // Rule 2: attributedTo MUST be a URL, not an object.
         //activity.put("attributedTo", hostUrl + "/activity/users/" + screenName);
 
         // FxTwitter includes these explicitly
@@ -940,8 +887,8 @@ public class WebServer {
         accountMastodon.put("display_name",account.displayName);
         accountMastodon.put("username",account.screenName + ")");
         accountMastodon.put("acct",account.screenName);
-        accountMastodon.put("url",postUrl);
-        accountMastodon.put("uri",postUrl);
+        accountMastodon.put("url",sourceUrl);
+        accountMastodon.put("uri",sourceUrl);
         accountMastodon.put("created_at","0");
         accountMastodon.put("locked",false);
         accountMastodon.put("bot",false);
@@ -969,10 +916,9 @@ public class WebServer {
         activity.put("poll",null);
 
         List<Map<String, Object>> attachments = new ArrayList<>();
-        if (post.media != null) {
-            for (TwitterMedia m : post.media) {
+        if (postMedia != null) {
+            for (TwitterMedia m : postMedia) {
                 if (m.localPath == null) continue;
-
                 String mediaUrl = getMediaUrl(hostUrl, m);
 
                 if (m.mediaType.equalsIgnoreCase("png") || m.mediaType.equalsIgnoreCase("jpg")) {
@@ -1024,34 +970,6 @@ public class WebServer {
         ctx.json(activity);
     }
 
-    public static void serveActivityPubUser(Context ctx) {
-        String screenName = ctx.pathParam("screenName");
-        TwitterAccount account = DatabaseHandler.getAccountByScreenName(screenName); // Assumes you have a method like this
-
-        String hostUrl = ctx.scheme() + "://" + ctx.host();
-        String displayName = (account != null && account.displayName != null && !account.displayName.isEmpty()) ? account.displayName : screenName;
-
-        Map<String, Object> actor = new LinkedHashMap<>();
-        actor.put("@context", "https://www.w3.org/ns/activitystreams");
-        actor.put("type", "Person");
-        actor.put("id", hostUrl + "/activity/users/" + screenName);
-        actor.put("url", hostUrl + "/users/" + screenName); // Fallback URL
-        actor.put("name", displayName);
-        actor.put("preferredUsername", screenName);
-
-        /*
-         * Optional: If you have avatar images, Mastodon puts them here so Discord can show the profile pic!
-         * Map<String, Object> icon = new LinkedHashMap<>();
-         * icon.put("type", "Image");
-         * icon.put("mediaType", "image/jpeg");
-         * icon.put("url", hostUrl + "/avatar/url.jpg");
-         * actor.put("icon", icon);
-         */
-
-        ctx.contentType("application/activity+json; charset=utf-8");
-        ctx.json(actor);
-    }
-
     // Shared method to handle OpenGraph and oEmbed injection for Discord
     private static void serveEmbedPage(Context ctx, TwitterPost post, TwitterMedia singleMedia) throws IOException {
         Path path = Paths.get("public/index.html");
@@ -1061,24 +979,27 @@ public class WebServer {
         }
 
         String html = Files.readString(path);
-
+        //fallback
         if (post == null && singleMedia == null) {
             ctx.html(html);
             return;
         }
-
+        //if this is a media only embed, retrieve the whole post for the rest of the details
+        String targetId = ""; //targetId is the mediaId or postId depending on what was requested
         if (post == null) {
+            targetId = String.valueOf(singleMedia.id);
             post = DatabaseHandler.getPostDetails(singleMedia.postId);
+        } else {
+            targetId = post.postId;
         }
 
         TwitterAccount account = post != null ? DatabaseHandler.getAccountById(post.twitterId) : null;
         String hostUrl = ctx.scheme() + "://" + ctx.host();
+        String title = account.displayName + "(@" + account.screenName + ")";
         StringBuilder og = new StringBuilder();
 
-        String screenName = account != null ? account.screenName : "unknown";
-
         og.append("<meta property=\"og:site_name\" content=\"Sandstar Archive\" />\n");
-        og.append("<meta name=\"og:title\" content=\"" + account.displayName + "(@" + account.screenName + ")\" />\n");
+        og.append("<meta name=\"og:title\" content=\"" + title + "\" />\n");
         og.append("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
         //og.append("<meta name=\"twitter:site\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
         //og.append("<meta name=\"twitter:creator\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
@@ -1088,7 +1009,7 @@ public class WebServer {
             desc = (singleMedia.caption != null && !singleMedia.caption.isEmpty() ? singleMedia.caption : "");
             if (!desc.isEmpty()) desc += "\n\n";
             desc += "Rating: " + singleMedia.contentRating + " / " + singleMedia.safetyRating;
-        } else if (post != null) {
+        } else {
             desc = (post.postText != null ? post.postText : "");
             if (!desc.isEmpty()) desc += "\n\n";
             desc += "Rating: " + post.contentRating + " / " + post.safetyRating;
@@ -1104,7 +1025,8 @@ public class WebServer {
 
         //og.append("<meta property=\"og:type\" content=\"article\" />\n");
         og.append("<meta name=\"theme-color\" content=\"#1DA1F2\" />\n");
-/*
+
+        /*
         List<TwitterMedia> mediaList = singleMedia != null ? List.of(singleMedia) :
                 (post != null && post.media != null ? post.media : Collections.emptyList());
 
@@ -1157,8 +1079,7 @@ public class WebServer {
         og.append(oembedLink);
 
         //mastodon v1/activitypub spoof links
-        String targetId = singleMedia != null ? singleMedia.postId : (post != null ? post.postId : "");
-        String activityPubLink = "<link href=\"/users/ThisDoesntMatter/statuses/" + post.postId + "\" rel=\"alternate\" type=\"application/activity+json\"/>\n" +
+        String activityPubLink = "<link href=\"/users/ThisDoesntMatter/statuses/" + targetId + "\" rel=\"alternate\" type=\"application/activity+json\"/>\n" +
                 "<link href=\"/api/v1/statuses/" + targetId + "\" rel=\"alternate\" type=\"application/activity+json\"/>\n";
         og.append(activityPubLink);
 
