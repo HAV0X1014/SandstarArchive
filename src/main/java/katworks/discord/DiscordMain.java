@@ -92,8 +92,9 @@ public class DiscordMain {
                 .addOptions(postSafetyOptions)
                 /*.addOption(OptionType.STRING,"artistname","The name of the artist if they do not exist yet.",false)*/);
 
-        cd.add(Commands.slash("gettwitteraccountinfo","Scrape account info by twitter @name. (Does not use db)")
-                .addOption(OptionType.STRING,"screenname","The @name of the account.",true));
+        cd.add(Commands.slash("gettwitteraccountinfo","Scrape account info by twitter @name or ID. (Does not use db)")
+                .addOption(OptionType.STRING,"screenname","The @name of the account.",false)
+                .addOption(OptionType.STRING,"id","The snowflake ID of the account.",false));
 
         cd.add(Commands.slash("editaccount","Set twitter account info to the desired values.")
                 .addOption(OptionType.STRING,"screenname","The @name of the account.",true)

@@ -24,10 +24,10 @@ public class Main {
     public static void main(String[] args) {
         //check if config and account exists. if not, set it up with the needed content to fill, then exit.
         if (!new File("config.json").exists()) {
-            System.out.println("It appears that this is your first time running SandstArchive. ようこそ! Config created at config.json");
             Config.create();
-            System.out.println("Re-run the program once you have configured it how you desire. Additionally, fill account.json with your x.com/twitter info.");
+            System.out.println("It appears that this is your first time running SandstArchive. ようこそ! Config created at config.json");
             Config.createAccount();
+            System.out.println("Re-run the program once you have configured it how you desire. Additionally, fill account.json with your x.com/twitter info.");
             System.exit(0);
         }
         if (!new File("account.json").exists()) {

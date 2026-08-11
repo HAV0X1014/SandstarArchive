@@ -872,7 +872,7 @@ public class WebServer {
         activity.put("in_reply_to_account_id",null);
         activity.put("language","en");
         activity.put("content", desc);
-        activity.put("spoiler_text","");
+        activity.put("spoiler_text",""); //account.displayName + " (@" + account.screenName + ")"
         activity.put("visibility","public");
 
         application.put("name","Sandstar Archive");
@@ -884,8 +884,8 @@ public class WebServer {
         //activity.put("summary", null);
         //activity.put("sensitive", "NSFW".equalsIgnoreCase(post.safetyRating)); // True if NSFW
         accountMastodon.put("id","456");
-        accountMastodon.put("display_name",account.displayName);
-        accountMastodon.put("username",account.screenName + ")");
+        accountMastodon.put("display_name","");
+        accountMastodon.put("username",account.screenName);
         accountMastodon.put("acct",account.screenName);
         accountMastodon.put("url",sourceUrl);
         accountMastodon.put("uri",sourceUrl);
@@ -995,12 +995,13 @@ public class WebServer {
 
         TwitterAccount account = post != null ? DatabaseHandler.getAccountById(post.twitterId) : null;
         String hostUrl = ctx.scheme() + "://" + ctx.host();
-        String title = account.displayName + "(@" + account.screenName + ")";
+        String title = account.displayName + " (@" + account.screenName + ")";
         StringBuilder og = new StringBuilder();
 
         og.append("<meta property=\"og:site_name\" content=\"Sandstar Archive\" />\n");
         og.append("<meta name=\"og:title\" content=\"" + title + "\" />\n");
-        og.append("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
+        og.append("<meta name=\"theme-color\" content=\"#1DA1F2\" />\n");
+        //og.append("<meta name=\"twitter:card\" content=\"summary_large_image\" />\n");
         //og.append("<meta name=\"twitter:site\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
         //og.append("<meta name=\"twitter:creator\" content=\"@").append(escapeHtml(screenName)).append("\" />\n");
 
@@ -1024,7 +1025,6 @@ public class WebServer {
         }*/
 
         //og.append("<meta property=\"og:type\" content=\"article\" />\n");
-        og.append("<meta name=\"theme-color\" content=\"#1DA1F2\" />\n");
 
         /*
         List<TwitterMedia> mediaList = singleMedia != null ? List.of(singleMedia) :

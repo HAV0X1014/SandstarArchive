@@ -10,6 +10,7 @@ import dev.seeight.twitterscraper.impl.user.UserMedia;
 import dev.seeight.twitterscraper.util.JsonUtil;
 import katworks.database.DatabaseHandler;
 import katworks.discord.DiscordNotificationService;
+import katworks.discord.SendStatusMessage;
 import katworks.impl.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -21,6 +22,7 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -187,6 +189,8 @@ public class TwitterScraper {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             e.printStackTrace();
+        } catch (RuntimeException e) {
+            SendStatusMessage.sendMessage("Error while scraping for " + account.screenName + ":\n" + e.getMessage() + "\n" + Arrays.toString(e.getStackTrace()));
         }
 
         return archivedCount;

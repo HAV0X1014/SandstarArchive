@@ -9,7 +9,6 @@ import net.dv8tion.jda.api.components.buttons.Button;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.entities.Message.Attachment;
 import net.dv8tion.jda.api.entities.MessageEmbed;
-import net.dv8tion.jda.api.entities.channel.concrete.ThreadChannel;
 import net.dv8tion.jda.api.utils.FileUpload;
 
 import java.io.File;
@@ -48,7 +47,8 @@ public class DiscordNotificationService {
                     .queue(threadMsg -> {
                         //pass the sent message to the feed processor to get info from it
                         sendToRawFeed(post, account, threadMsg);
-                    }, error -> SendStatusMessage.sendMessage("Error when sending to Discord (artist thread <#" + account.discordThreadId + ":\n" + Arrays.toString(error.getStackTrace())));
+                        //check exception
+                    }, error -> SendStatusMessage.sendMessage("Error when sending to Discord (artist thread <#" + account.discordThreadId + "> :\n" + Arrays.toString(error.getStackTrace())));
         }, error -> {
             SendStatusMessage.sendMessage("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);
             System.err.println("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);

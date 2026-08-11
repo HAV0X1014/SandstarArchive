@@ -51,7 +51,13 @@ public class SlashCommandHandler extends ListenerAdapter {
                         //scrape twitter to get accurate account details
                         TwitterAccount account = TwitterScraper.getUserProfileByName(handle);
 
-                        if (account == null) {
+                        //check if account exists in database
+                        if (DatabaseHandler.getAccountById(account.twitterId).twitterId != null) {
+                            interaction.getHook().sendMessage("Account has been added previously.").queue();
+                            return;
+                        }
+
+                        if (account.twitterId == null) {
                             interaction.getHook().sendMessage("Error: Could not find user @" + handle + " on Twitter.").queue();
                             return;
                         }
@@ -144,9 +150,16 @@ public class SlashCommandHandler extends ListenerAdapter {
                 break;
             }
             case "gettwitteraccountinfo": {
-                TwitterAccount account = TwitterScraper.getUserProfileByName(interaction.getOption("screenname").getAsString());
-                interaction.reply(account.toString()).queue();
-                break;
+                if (interaction.getOption("screenname") != null) {
+                    TwitterAccount account = TwitterScraper.getUserProfileByName(interaction.getOption("screenname").getAsString());
+                    interaction.reply(account.toString()).queue();
+                    break;
+                }
+                if (interaction.getOption("id") != null) {
+                    TwitterAccount account = TwitterScraper.getUserProfileById(interaction.getOption("id").getAsString());
+                    interaction.reply(account.toString()).queue();
+                    break;
+                }
             }
             case "editaccount": {
                 String screenName = interaction.getOption("screenname").getAsString();

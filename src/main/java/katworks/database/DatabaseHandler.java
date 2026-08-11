@@ -258,14 +258,14 @@ public class DatabaseHandler {
 
     /**
      * Get a List<TwitterAccount> of all accounts that are allowed to be downloaded.
-     * The account must have download_status = true, account_status = 'Active', and is_protected = false.
+     * The account must have download_status = true, and account_status = 'Active'.
      * @return
      */
     public static List<TwitterAccount> getActiveAccounts() {
         List<TwitterAccount> accounts = new ArrayList<>();
         String sql = "SELECT twitter_id, artist_id, screen_name, display_name, account_status, is_protected, last_scraped_id, download_status, discord_thread_id, safety_rating " +
                 "FROM twitter_accounts " +
-                "WHERE download_status = 1 AND account_status = 'Active' AND is_protected = 0";
+                "WHERE download_status = 1 AND account_status = 'Active'";
 
         // Use the new getConnection() helper here
         try (Connection conn = getConnection();
@@ -603,7 +603,7 @@ public class DatabaseHandler {
                             "    post_date INTEGER,\n" +
                             "    archive_date INTEGER,\n" +
                             "    safety_rating TEXT,\n" +
-                            "    content_rating INTEGER,\n" +
+                            "    content_rating TEXT,\n" +
                             "    FOREIGN KEY (twitter_id) REFERENCES twitter_accounts(twitter_id) ON DELETE CASCADE\n" +
                             ");");
             statement.execute(
