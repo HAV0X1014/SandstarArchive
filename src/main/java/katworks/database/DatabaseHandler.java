@@ -47,6 +47,10 @@ public class DatabaseHandler {
         return dataSource.getConnection();
     }
 
+    public static void shutdown() {
+        dataSource.close();
+    }
+
     /**
      * Sets the safety rating of a post using the postId as the lookup.
      * @param postId
@@ -1704,35 +1708,48 @@ public class DatabaseHandler {
      * This ensures only ONE user token exists in the sessions table per user.
      */
     public static String getOrCreateUserToken(int userId, long expiresAt) {
-        String selectSql = "SELECT session_token FROM sessions WHERE user_id = ? AND token_type = 'User' LIMIT 1";
+        String selectSql = "SELECT session_token, expires_at FROM sessions WHERE user_id = ? AND token_type = 'User' LIMIT 1";
 
         try (Connection conn = getConnection(); PreparedStatement ps = conn.prepareStatement(selectSql)) {
             ps.setInt(1, userId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {
-                    return rs.getString("session_token"); // Return existing token
+                    long tokenExpiresAt = rs.getLong("expires_at");
+                    // If it never expires (NULL) or hasn't expired yet, return it
+                    if (rs.wasNull() || tokenExpiresAt > Instant.now().getEpochSecond()) {
+                        return rs.getString("session_token");
+                    }
                 }
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);
         }
 
-        // If no token exists, generate a new one and write it synchronously to return it safely
+        // Generate a new token
         String newToken = "user_" + generateSecureTokenString();
+        long now = Instant.now().getEpochSecond();
 
-        // Write it synchronously so the login workflow can immediately hand it back to the client
+        // Delete any old token for this user and insert the new one
         try (Connection conn = getConnection()) {
+            // 1. Delete the old/expired token
+            String deleteSql = "DELETE FROM sessions WHERE user_id = ? AND token_type = 'User'";
+            try (PreparedStatement deletePs = conn.prepareStatement(deleteSql)) {
+                deletePs.setInt(1, userId);
+                deletePs.executeUpdate();
+            }
+
+            // 2. Insert the new token
             String insertSql = "INSERT INTO sessions (user_id, session_token, token_type, created_at, expires_at) VALUES (?, ?, 'User', ?, ?)";
-            try (PreparedStatement ps = conn.prepareStatement(insertSql)) {
-                ps.setInt(1, userId);
-                ps.setString(2, newToken);
-                ps.setLong(3, Instant.now().getEpochSecond());
+            try (PreparedStatement insertPs = conn.prepareStatement(insertSql)) {
+                insertPs.setInt(1, userId);
+                insertPs.setString(2, newToken);
+                insertPs.setLong(3, now);
                 if (expiresAt == -1) {
-                    ps.setNull(4, java.sql.Types.INTEGER);
+                    insertPs.setNull(4, java.sql.Types.BIGINT);
                 } else {
-                    ps.setLong(4, expiresAt);
+                    insertPs.setLong(4, expiresAt);
                 }
-                ps.executeUpdate();
+                insertPs.executeUpdate();
             }
         } catch (SQLException e) {
             throw new RuntimeException(e);

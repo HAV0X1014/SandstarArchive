@@ -27,6 +27,10 @@ public class ScrapeService {
         scheduler.scheduleWithFixedDelay(this::runGlobalScrape,0, config.checkIntervalHours, TimeUnit.HOURS);
     }
 
+    public void shutdown() {
+        scheduler.shutdown();
+    }
+
     /**
      * The actual account scrape loop set to run at the interval set in start().
      */

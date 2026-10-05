@@ -19,4 +19,19 @@ public class TwitterPost {
     public TwitterPost() {
 
     }
+
+    @Override
+    public String toString() {
+        return "TwitterPost{" +
+                "postId='" + postId + '\'' +
+                ", screenName='" + screenName + '\'' +
+                ", twitterId='" + twitterId + '\'' +
+                ", postText='" + postText + '\'' +
+                ", postDate=" + postDate +
+                ", archiveDate=" + archiveDate +
+                ", safetyRating='" + safetyRating + '\'' +
+                ", contentRating='" + contentRating + '\'' +
+                ", media=" + media +
+                '}';
+    }
 }

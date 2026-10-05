@@ -3,6 +3,7 @@ package katworks;
 import dev.seeight.twitterscraper.Secret;
 import dev.seeight.twitterscraper.TwitterApi;
 import dev.seeight.twitterscraper.features.FeatureFetcher;
+import io.javalin.Javalin;
 import katworks.archive.ScrapeService;
 import katworks.database.DatabaseHandler;
 import katworks.database.WriteQueue;
@@ -13,15 +14,28 @@ import okhttp3.OkHttpClient;
 
 import java.io.File;
 import java.time.LocalTime;
+import java.util.concurrent.TimeUnit;
+
+import static katworks.discord.DiscordMain.jda;
 
 public class Main {
     public static TwitterApi api;
     public static Config config;
-    public static final OkHttpClient CLIENT = new OkHttpClient();
+    public static final OkHttpClient CLIENT = new OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS).readTimeout(15,TimeUnit.SECONDS).build();
     public static WriteQueue writeQueue;
     public static final LocalTime startTime = LocalTime.now();
+    public static Javalin webServer;
+    public static ScrapeService scrapeService;
 
     public static void main(String[] args) {
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Cleaning up resources... closing files... saying goodbye...");
+            scrapeService.shutdown(); //stop scrape service
+            writeQueue.shutdown(); //stop write queue
+            webServer.stop(); //stop webserver
+            jda.shutdown(); //stop discord
+            DatabaseHandler.shutdown();
+        }));
         //check if config and account exists. if not, set it up with the needed content to fill, then exit.
         if (!new File("config.json").exists()) {
             Config.create();
@@ -60,6 +74,7 @@ public class Main {
         }
 
         writeQueue = new WriteQueue(); //global write queue that prevents any locked database issues
-        new ScrapeService().start(); //service that runs scrapes for new content every 2 hours.
+        scrapeService = new ScrapeService(); //service that runs scrapes for new content every 2 hours.
+        scrapeService.start();
     }
 }

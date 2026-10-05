@@ -27,14 +27,27 @@ import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.*;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.*;
 import java.util.stream.Stream;
 
 import static katworks.Main.config;
+import static katworks.Main.webServer;
 
 public class WebServer {
+    private static class PendingRating {
+        String content;
+        String safety;
+    }
 
     private static final SecureRandom secureRandom = new SecureRandom();
+
+    private static final Map<String, PendingRating> pendingPostRatings = new ConcurrentHashMap<>();
+    private static final Map<String, ScheduledFuture<?>> postRatingTimers = new ConcurrentHashMap<>();
+
+    private static final Map<Integer, PendingRating> pendingMediaRatings = new ConcurrentHashMap<>();
+    private static final Map<Integer, ScheduledFuture<?>> mediaRatingTimers = new ConcurrentHashMap<>();
+
+    private static final ScheduledExecutorService ratingScheduler = Executors.newSingleThreadScheduledExecutor();
 
     private static String generateSessionToken() {
         byte[] randomBytes = new byte[32];
@@ -50,6 +63,65 @@ public class WebServer {
                 }
             }
     );
+
+    //helpers for debouncing post and media ratings. 2 second delay to collect ratings and executed afterward.
+    private static void queuePostRating(String postId, String content, String safety) {
+        pendingPostRatings.compute(postId, (id, existing) -> {
+            if (existing == null) existing = new PendingRating();
+            if (content != null) existing.content = content;
+            if (safety != null) existing.safety = safety;
+            return existing;
+        });
+
+        ScheduledFuture<?> oldTimer = postRatingTimers.get(postId);
+        if (oldTimer != null) {
+            oldTimer.cancel(false);
+        }
+
+        ScheduledFuture<?> newTimer = ratingScheduler.schedule(() -> flushPostRating(postId), 2, TimeUnit.SECONDS);
+        postRatingTimers.put(postId, newTimer);
+    }
+
+    private static void flushPostRating(String postId) {
+        try {
+            PendingRating data = pendingPostRatings.remove(postId);
+            postRatingTimers.remove(postId);
+            if (data != null) {
+                DatabaseHandler.setPostRatings(postId, data.content, data.safety);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static void queueMediaRating(int mediaId, String content, String safety) {
+        pendingMediaRatings.compute(mediaId, (id, existing) -> {
+            if (existing == null) existing = new PendingRating();
+            if (content != null) existing.content = content;
+            if (safety != null) existing.safety = safety;
+            return existing;
+        });
+
+        ScheduledFuture<?> oldTimer = mediaRatingTimers.get(mediaId);
+        if (oldTimer != null) {
+            oldTimer.cancel(false);
+        }
+
+        ScheduledFuture<?> newTimer = ratingScheduler.schedule(() -> flushMediaRating(mediaId), 2, TimeUnit.SECONDS);
+        mediaRatingTimers.put(mediaId, newTimer);
+    }
+
+    private static void flushMediaRating(int mediaId) {
+        try {
+            PendingRating data = pendingMediaRatings.remove(mediaId);
+            mediaRatingTimers.remove(mediaId);
+            if (data != null) {
+                DatabaseHandler.setMediaRatings(mediaId, data.content, data.safety);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
 
     // Helper for generating proper external URLs for OpenGraph tags
     private static String getMediaUrl(String host, TwitterMedia m) {
@@ -74,7 +146,7 @@ public class WebServer {
     }
 
     public static void start() {
-        Javalin.create(figgy -> {
+        webServer = Javalin.create(figgy -> {
             figgy.staticFiles.add("public/", Location.EXTERNAL);
             figgy.staticFiles.add(staticFiles -> {
                 staticFiles.directory = config.imageDownloadPath;
@@ -419,7 +491,7 @@ public class WebServer {
                 if (req.containsKey("contentRating") || req.containsKey("safetyRating")) {
                     String content = (String) req.get("contentRating");
                     String safety = (String) req.get("safetyRating");
-                    DatabaseHandler.setMediaRatings(mediaId, content, safety);
+                    queueMediaRating(mediaId, content, safety);
                 }
 
                 ctx.json(Map.of("success", true, "message", "Media updated"));
@@ -433,7 +505,7 @@ public class WebServer {
                 String content = req.get("contentRating");
                 String safety = req.get("safetyRating");
                 if (content != null || safety != null) {
-                    DatabaseHandler.setPostRatings(postId, content, safety);
+                    queuePostRating(postId, content, safety);
                 }
 
                 ctx.json(Map.of("success", true, "message", "Post updated"));

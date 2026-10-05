@@ -25,8 +25,7 @@ import java.util.concurrent.Executors;
 
 import static katworks.Main.config;
 import static katworks.Main.startTime;
-import static katworks.discord.DiscordMain.allowedRole;
-import static katworks.discord.DiscordMain.jda;
+import static katworks.discord.DiscordMain.*;
 
 public class SlashCommandHandler extends ListenerAdapter {
     private static final ExecutorService COMMAND_POOL = Executors.newFixedThreadPool(5);
@@ -99,15 +98,29 @@ public class SlashCommandHandler extends ListenerAdapter {
                         // 1. Extract Post ID
                         String postId = ExtractPostId.extract(url);
                         if (postId == null) {
-                            interaction.reply("Invalid URL.").setEphemeral(true).queue();
+                            interaction.getHook().editOriginal("Invalid URL.").queue();
                             return;
                         }
 
-                        // 2. Scrape the post
-                        TwitterPost post = TwitterScraper.scrapePostById(postId);
+                        if (DatabaseHandler.getPostDetails(postId) != null) { //returns not-null if the post exists already
+                            interaction.getHook().editOriginal("Post already has been scraped.").queue();
+                            return;
+                        }
 
-                        // 3. Ensure the account exists (The "Simplifier")
-                        TwitterAccount dbAccount = ensureAccountExists(post);
+                        //scrape post but dont save it if the account isnt in the database
+                        TwitterPost post = TwitterScraper.scrapePostByIdButDontSaveItIfTheAccountIsntInTheDatabase(postId);
+                        //if post is null here, then the post was not saved because the account doesnt exist in the database
+                        if (post == null) {
+                            interaction.getHook().editOriginal("Account does not exist in database.").queue();
+                            return;
+                        }
+
+                        TwitterAccount dbAccount = DatabaseHandler.getAccountById(post.twitterId);
+                        //double checking
+                        if (dbAccount.twitterId == null) {
+                            interaction.getHook().editOriginal("Account does not exist in database (how?).").queue();
+                            return;
+                        }
 
                         // 4. Prepare Uploads
                         List<FileUpload> uploads = new ArrayList<>();
@@ -117,24 +130,23 @@ public class SlashCommandHandler extends ListenerAdapter {
                         }
 
                         // 5. Send to the Account Thread
-                        ThreadChannel thread = jda.getThreadChannelById(dbAccount.discordThreadId);
-                        if (thread == null) throw new Exception("Thread not found.");
+                        artistThreadCache.getThread(Long.parseLong(dbAccount.discordThreadId), thread -> {
+                            thread.sendFiles(uploads).addEmbeds(new EmbedBuilder()
+                                    .setAuthor(dbAccount.screenName, "https://x.com/i/status/" + post.postId)
+                                    .setDescription(post.postText)
+                                    .addField("Content Rating", contentRating, true)
+                                    .addField("Safety Rating", safetyRating, true)
+                                    .setTimestamp(Instant.ofEpochMilli(post.postDate * 1000L))
+                                    .build()
+                            ).queue(msg -> {
+                                // 6. After the thread message is sent, respond to the command with grouped embeds
+                                List<MessageEmbed> groupedEmbeds = buildGroupedEmbeds(msg, post, dbAccount, contentRating, safetyRating);
+                                interaction.getHook().sendMessageEmbeds(groupedEmbeds).queue();
 
-                        thread.sendFiles(uploads).addEmbeds(new EmbedBuilder()
-                                .setAuthor(dbAccount.screenName, "https://x.com/i/status/" + post.postId)
-                                .setDescription(post.postText)
-                                .addField("Content Rating", contentRating, true)
-                                .addField("Safety Rating", safetyRating, true)
-                                .setTimestamp(Instant.ofEpochMilli(post.postDate * 1000L))
-                                .build()
-                        ).queue(msg -> {
-                            // 6. After the thread message is sent, respond to the command with grouped embeds
-                            List<MessageEmbed> groupedEmbeds = buildGroupedEmbeds(msg, post, dbAccount, contentRating, safetyRating);
-                            interaction.getHook().sendMessageEmbeds(groupedEmbeds).queue();
-
-                            // 7. CRITICAL: Only move the files/update DB AFTER Discord has finished uploading them
-                            DatabaseHandler.setPostRatings(post.postId, contentRating, safetyRating);
-                        });
+                                // 7. CRITICAL: Only move the files/update DB AFTER Discord has finished uploading them
+                                DatabaseHandler.setPostRatings(post.postId, contentRating, safetyRating);
+                            });
+                        },error -> System.err.println("Thread channel not found."));
 
                     } catch (Exception e) {
                         interaction.getHook().sendMessage("Error: " + e.getMessage()).queue();
@@ -207,10 +219,12 @@ public class SlashCommandHandler extends ListenerAdapter {
                     stopId = "0"; //default 0 to scrape to end of account unless stopid is specified.
                 }
                 TwitterPost post = TwitterScraper.scrapePostById(postId);
+                TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
+                if (account.twitterId == null) {
+                    interaction.reply("Account does not exist in database.").queue();
+                }
                 CompletableFuture.runAsync(() -> {
                     try {
-                        TwitterAccount account = ensureAccountExists(post);
-
                         TwitterScraper.scrapeFromPostId(account,postId,stopId);
                     } catch (Exception e) {
                         e.printStackTrace();
@@ -227,30 +241,6 @@ public class SlashCommandHandler extends ListenerAdapter {
                 break;
             }
         }
-    }
-
-    /**
-     * Ensures account and thread exist. Returns the account info.
-     */
-    private TwitterAccount ensureAccountExists(TwitterPost post) throws Exception {
-        TwitterAccount account = DatabaseHandler.getAccountById(post.twitterId);
-
-        // If account exists, we are done
-        if (account.twitterId != null) return account;
-
-        // Otherwise, create it
-        TwitterAccount profile = TwitterScraper.getUserProfileByName(post.screenName);
-        DatabaseHandler.registerAccount(profile.twitterId, profile.screenName, profile.displayName, profile.screenName, false, null);
-
-        // Create the Discord Thread
-        TextChannel accountsChannel = jda.getTextChannelById(config.accountsChannel);
-        ThreadChannel newThread = accountsChannel.createThreadChannel(profile.screenName + " @" + profile.screenName).complete();
-
-        DatabaseHandler.setDiscordThreadId(profile.twitterId, newThread.getId());
-        Thread.sleep(30); //very small sleep so the write goes through - race condition fix?
-
-        // Refresh account data with new thread ID
-        return DatabaseHandler.getAccountById(post.twitterId);
     }
 
     /**

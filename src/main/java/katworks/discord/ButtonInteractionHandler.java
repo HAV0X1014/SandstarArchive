@@ -11,8 +11,7 @@ import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import java.util.concurrent.*;
 import java.util.Map;
 
-import static katworks.discord.DiscordMain.allowedRole;
-import static katworks.discord.DiscordMain.jda;
+import static katworks.discord.DiscordMain.*;
 
 public class ButtonInteractionHandler extends ListenerAdapter {
 
@@ -100,21 +99,24 @@ public class ButtonInteractionHandler extends ListenerAdapter {
     }
 
     private void updateThread(Message msg, PendingData data) {
-        try {
-            String jumpURL = !msg.getEmbeds().isEmpty() ?
-                    msg.getEmbeds().get(0).getAuthor().getUrl() : msg.getContentRaw().split("\\s+")[0];
+        String jumpURL;
+        if (msg.getContentRaw().isEmpty()) { //for normal embeds
+            jumpURL = msg.getEmbeds().get(0).getAuthor().getUrl();
+        } else { //for video embeds (plaintext ones)
+            jumpURL = msg.getContentRaw().split("\\s")[0];
+        }
+        //jump urls are formatted like https://discord.com/channels/[channelID]/[threadID]/[messageID]
+        String[] urlParts = jumpURL.split("/");
+        String mId = urlParts[6];
+        String tId = urlParts[5];
 
-            String[] urlParts = jumpURL.split("/");
-            String mId = urlParts[urlParts.length - 1];
-            String tId = urlParts[urlParts.length - 2];
-
-            ThreadChannel tc = jda.getThreadChannelById(tId);
-            if (tc != null) {
-                tc.retrieveMessageById(mId).queue(tMsg -> {
+        artistThreadCache.getThread(Long.parseLong(tId), threadChannel -> {
+            if (threadChannel != null) {
+                threadChannel.retrieveMessageById(mId).queue(tMsg -> {
                     tMsg.editMessageEmbeds(rebuildEmbed(tMsg.getEmbeds().get(0), data)).queue();
                 });
             }
-        } catch (Exception ignored) {}
+        }, error -> {});
     }
 
     private MessageEmbed rebuildEmbed(MessageEmbed old, PendingData data) {

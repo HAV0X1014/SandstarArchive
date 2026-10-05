@@ -85,4 +85,8 @@ public class WriteQueue {
             s.execute(sql);
         } catch (SQLException e) { e.printStackTrace(); }
     }
+
+    public void shutdown() {
+        writerExecutor.shutdown();
+    }
 }

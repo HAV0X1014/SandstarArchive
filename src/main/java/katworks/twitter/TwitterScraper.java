@@ -229,6 +229,46 @@ public class TwitterScraper {
     }
 
     /**
+     * This is for the slash command or other instances where you want to scrape a post by id, but not save it
+     * if you dont have the account archived. essentially if you find a neat post and wham it into your downloader command
+     * without checking if the account is added; it wont create an orphaned post without an associated account.
+     * @param postId
+     * @return
+     */
+    public static TwitterPost scrapePostByIdButDontSaveItIfTheAccountIsntInTheDatabase(String postId) {
+        try {
+            TweetDetail tweetDetail = api.scrap(new ConfigTweetDetail(postId, null), CLIENT);
+            JSONObject mediaJson = new JSONObject(JsonUtil.toJson(tweetDetail));
+            JSONArray instructionsArray = mediaJson.optJSONArray("instructions");
+
+            if (instructionsArray == null) return null;
+
+            for (int i = 0; i < instructionsArray.length(); i++) {
+                JSONObject instruction = instructionsArray.getJSONObject(i);
+                if (instruction.has("entries")) {
+                    JSONArray entries = instruction.getJSONArray("entries");
+                    for (int e = 0; e < entries.length(); e++) {
+                        JSONObject entry = entries.getJSONObject(e);
+                        if (postId.equals(entry.optString("id"))) {
+                            //before we send this post to be parsed and downloaded and stored in the db, check if the twitter id exists in the account table
+                            if (DatabaseHandler.getAccountById(entry.getJSONObject("user").getString("restId")).twitterId != null) {
+                                TwitterPost post = extractAndDownloadPost(entry);
+                                if (post != null) savePostToDbAsync(post);
+                                return post;
+                            } else { //if not, dont download the post and return null
+                                return null;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (IOException | URISyntaxException e) {
+            throw new RuntimeException(e);
+        }
+        return null;
+    }
+
+    /**
      * Unified parser: Parses post JSON, extracts media URLs, downloads media, and builds the TwitterPost object.
      */
     private static TwitterPost extractAndDownloadPost(JSONObject post) {

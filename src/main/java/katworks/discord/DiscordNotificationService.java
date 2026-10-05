@@ -33,7 +33,6 @@ public class DiscordNotificationService {
         String originalUrl = "https://x.com/i/status/" + post.postId;
 
         //send to artist thread first to get file links and jump url
-        //ThreadChannel thread = jda.getThreadChannelById(account.discordThreadId);
         artistThreadCache.getThread(Long.parseLong(account.discordThreadId), thread -> {
             EmbedBuilder threadEmbed = new EmbedBuilder()
                     .setAuthor(account.screenName, originalUrl)
@@ -48,10 +47,10 @@ public class DiscordNotificationService {
                         //pass the sent message to the feed processor to get info from it
                         sendToRawFeed(post, account, threadMsg);
                         //check exception
-                    }, error -> SendStatusMessage.sendMessage("Error when sending to Discord (artist thread <#" + account.discordThreadId + "> :\n" + Arrays.toString(error.getStackTrace())));
+                    }, error -> SendStatusMessage.sendMessage("Error when sending to Discord (artist thread <#" + account.discordThreadId + "> :\n" + error.getMessage() + "\n" + Arrays.toString(error.getStackTrace())));
         }, error -> {
-            SendStatusMessage.sendMessage("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);
-            System.err.println("CRITICAL: failed to retrieve thread for ID: " + account.discordThreadId);
+            SendStatusMessage.sendMessage("Failed to retrieve thread for ID: " + account.discordThreadId);
+            System.err.println("Failed to retrieve thread for ID: " + account.discordThreadId);
         });
     }
 
